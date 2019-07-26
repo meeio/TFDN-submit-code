@@ -74,7 +74,7 @@ class TransferableProtopyteNetwork(TrainableModule):
             sou_set,
             batch_size=128,
             drop_last=True,
-            sampler=BalancedSampler(s_info["labels"]),
+            sampler=BalancedSampler(s_info["labels"], max_per_cls=200),
         )
         tar_loader = DataLoader(
             tar_set, batch_size=128, shuffle=True, drop_last=True
@@ -117,11 +117,12 @@ class TransferableProtopyteNetwork(TrainableModule):
     def _regist_losses(self):
 
         optimer = {
-            "type": torch.optim.SGD,
-            "lr": 0.01,
+            "type": torch.optim.Adam,
+            "lr": 0.0002,
             "weight_decay": 0.0005,
-            "momentum": 0.95,
             # "nesterov": True,
+            # "momentum": 0.95,
+            "betas": (0.9,0.999),
         }
 
         lr_scheduler = {

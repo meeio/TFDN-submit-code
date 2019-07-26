@@ -1,10 +1,11 @@
 
 
 
-from torch.utils.data import Sampler
 import random
 import itertools
 import numpy
+import random
+from torch.utils.data import Sampler
 from functools import partial
 from copy import deepcopy
 
@@ -13,7 +14,7 @@ class BalancedSampler(Sampler):
     """
 
 
-    def __init__(self, targets):
+    def __init__(self, targets, max_per_cls=None):
         star_class = min(targets)
         end_class = max(targets)
         number_of_classes =end_class - star_class + 1
@@ -23,6 +24,10 @@ class BalancedSampler(Sampler):
             sample_indexes = [
                 i for i in range(len(targets)) if targets[i] == current_class
             ]
+
+            if max_per_cls:
+                random.shuffle(sample_indexes)
+                sample_indexes = sample_indexes[0:max_per_cls]
 
             class_wise_idxs.append(sample_indexes)
 
