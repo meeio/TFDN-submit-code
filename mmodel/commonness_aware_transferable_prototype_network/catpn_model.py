@@ -4,16 +4,16 @@ import numpy as np
 import torch
 
 from mdata.data_iter import EndlessIter
-from mdata.sample.sampler import BalancedSampler, PartialSampler
+from mdata.sample.sampler import BalancedSampler
 from mdata.sample.label import OpensetLabelManager
 from mdata import for_dataset, for_digital_transforms
 
 from torch.utils.data.dataloader import DataLoader
 
 from ..basic_module import TrainableModule
-from .tpn_params import get_params
+from .catpn_params import get_params
 
-from .networks.networks import LeNetEncoder
+from .networks.networks import LeNetEncoder, CommonnessPredictor
 
 from mground.math_utils import euclidean_dist
 from mground.loss_utils import mmd_loss
@@ -34,7 +34,7 @@ def dist_based_prediction(pred_pto, center_pto):
     return pred
 
 
-class TransferableProtopyteNetwork(TrainableModule):
+class CommonnessAwareTransferableProtopyteNetwork(TrainableModule):
     def __init__(self):
         super().__init__(param)
 
@@ -42,25 +42,16 @@ class TransferableProtopyteNetwork(TrainableModule):
         self.log_softmax = torch.nn.LogSoftmax()
         self.mmd = mmd_loss
         self.pseudo_threshold = math.log(0.6)
-        self.label_manager = OpensetLabelManager(
-            cls_num=10,
-            close_part=[0,1,2,3,4,5,6], 
-            open_part=[3,4,5,6,7,8,9]
-        )
+
 
         # somethin you need, can be empty
         self._all_ready()
 
     def cls_ptos(self, ptos, targets):
-        cls_num = len(self.label_manager.open_part)
-        cls_ptos_idx = torch.cat(
-            [targets.eq(c).unsqueeze(0) for c in range(cls_num)]
-        )
+        cls_num = self.data_info["cls_num"]
+        cls_ptos_idx = torch.cat([targets.eq(c).unsqueeze(0) for c in range(cls_num)])
         cls_ptos_cet = torch.cat(
-            [
-                (ptos[cls_ptos_idx[c]]).mean(dim=0, keepdim=True)
-                for c in range(cls_num)
-            ]
+            [(ptos[cls_ptos_idx[c]]).mean(dim=0, keepdim=True) for c in range(cls_num)]
         )
         return cls_ptos_cet, cls_ptos_idx
 
@@ -72,21 +63,19 @@ class TransferableProtopyteNetwork(TrainableModule):
 
         trans = for_digital_transforms(is_rgb=False)
         sou_set, s_info = for_dataset("mnist", split="train", transfrom=trans)
-        tar_set, t_info = for_dataset("usps", split="train", transfrom=trans)
-        val_set, v_info = for_dataset("usps", split="test", transfrom=trans)
+        tar_set, _ = for_dataset("usps", split="train", transfrom=trans)
+        val_set, _ = for_dataset("usps", split="test", transfrom=trans)
 
-        _DataLoader = partial(
-            DataLoader, batch_size=128, drop_last=True, num_workers=4
+        sou_loader = DataLoader(
+            sou_set,
+            batch_size=128,
+            drop_last=True,
+            sampler=BalancedSampler(s_info["labels"], max_per_cls=200),
         )
-
-        s_sampler = PartialSampler(s_info["labels"], self.label_manager.close_part)
-        s_sampler = BalancedSampler(s_sampler, max_per_cls=200)
-        t_sampler = PartialSampler(t_info["labels"], self.label_manager.open_part)
-        v_sampler = PartialSampler(v_info["labels"], self.label_manager.open_part)
-
-        sou_loader = _DataLoader(sou_set, sampler=s_sampler)
-        tar_loader = _DataLoader(tar_set, sampler=t_sampler)
-        val_loader = _DataLoader(val_set, sampler=v_sampler)
+        tar_loader = DataLoader(
+            tar_set, batch_size=128, shuffle=True, drop_last=True, num_workers=4
+        )
+        val_loader = DataLoader(val_set, num_workers=4, batch_size=128, drop_last=True)
 
         iters = {
             "train": {
@@ -95,11 +84,11 @@ class TransferableProtopyteNetwork(TrainableModule):
             },
             "valid": {
                 "sou_iter": EndlessIter(sou_loader, max=10),
-                "val_iter": EndlessIter(val_loader, max=-1),
+                "val_iter": EndlessIter(val_loader),
             },
         }
 
-        data_info = {"cls_num": self.label_manager.cls_num}
+        data_info = {"cls_num": len(torch.unique(s_info["labels"]))}
         return data_info, iters
 
     def _feed_data(self, mode, *args, **kwargs):
@@ -110,21 +99,17 @@ class TransferableProtopyteNetwork(TrainableModule):
             return its["sou_iter"].next() + its["tar_iter"].next()
         elif mode == "pre_valid":
             its = self.iters["valid"]
-            return its["sou_iter"].next()
+            return its["sou_iter"].next(need_end=True)
         elif mode == "valid":
             its = self.iters["valid"]
-            imgs_label = its["val_iter"].next()
-            if imgs_label is None:
-                return imgs_label
-            imgs, labels = imgs_label
-            self.label_manager.conver_target_label(labels)
-            return imgs, labels
+            return its["val_iter"].next(need_end=True)
 
         raise Exception("feed error!")
 
     def _regist_networks(self):
         net = LeNetEncoder()
-        return {"N": net}
+        com_pre = CommonnessPredictor()
+        return {"N": net, "C":com_pre}
 
     def _regist_losses(self):
 
@@ -146,16 +131,41 @@ class TransferableProtopyteNetwork(TrainableModule):
             "total", networks_key=["N"], optimer=optimer, decay_op=lr_scheduler
         )
 
-        self._define_log("cls_loss", "gen_loss", group="train")
+        self._define_loss(
+            "com", networks_key=["C"], optimer=optimer,
+            decay_op=lr_scheduler
+        )
+
+        self._define_log("cls_loss", "gen_loss","s_avg_com", group="train")
 
     def _train_process(self, datas):
 
         s_imgs, s_labels, t_imgs, _ = datas
 
+        print(s_labels)
         # generate sample prototypes and center prototypes
         s_ptos = self.N(s_imgs)
         t_ptos = self.N(t_imgs)
         s_pto_cets, s_pto_idxs = self.cls_ptos(s_ptos, s_labels)
+
+        
+        #############################
+        ## TEST ZONE
+        #############################
+
+        s_com = self.C(s_ptos)
+        t_com = self.C(t_ptos)
+
+        s_cet = s_com * s_ptos
+        t_cet = t_com * t_ptos
+
+        L_com = -self.mmd(s_cet, t_cet)
+
+
+        #############################
+        ## TEST ZONE
+        #############################
+
 
         # make prediction based on prototypes
         s_preds = dist_based_prediction(s_ptos, s_pto_cets)
@@ -180,21 +190,27 @@ class TransferableProtopyteNetwork(TrainableModule):
                 _L_gen.append(self.mmd(s_ptos[s], t_ptos[t]))
                 _L_gen.append(self.mmd(s_ptos[s], st_ptos[st]))
                 _L_gen.append(self.mmd(t_ptos[t], st_ptos[st]))
-
         L_gen = sum(_L_gen) / max(len(_L_gen), 1)
-
+        
         L_cls = self.nll(s_preds, s_labels)
 
         L = L_gen + L_cls
 
-        self._update_losses({"total": L, "cls_loss": L_cls, "gen_loss": L_gen})
+
+        self._update_losses({
+            "total": L, 
+            "com": L_com,
+            "cls_loss": L_cls, 
+            "gen_loss": L_gen,
+            "s_avg_com": torch.mean(s_com),
+        })
+
 
     def _eval_process(self, datas):
         img, label = datas
         prototypes = self.N(img)
         predcition = dist_based_prediction(prototypes, self.valid_ptos)
-        props, predcition = torch.max(predcition, dim=1)
-        predcition[props<0.5] = self.label_manager.unknown_cls
+        predcition = torch.max(predcition, dim=1)[1]
         return predcition
 
     def eval_module(self, **kwargs):
@@ -204,15 +220,17 @@ class TransferableProtopyteNetwork(TrainableModule):
         while True:
             datas = self._feed_data_with_anpai(mode="pre_valid")
             if datas is not None:
+                print(1)
                 img, label = datas
                 ptos = self.N(img)
                 batch_cls_ptos, _ = self.cls_ptos(ptos, label)
                 batch_cls_ptos = batch_cls_ptos.detach()
                 cls_ptos.append(batch_cls_ptos)
             else:
-                cls_ptos = torch.cat(
-                    [i.unsqueeze(1) for i in cls_ptos], dim=1
-                ).mean(dim=1)
+                print(2)
+                cls_ptos = torch.cat([i.unsqueeze(1) for i in cls_ptos], dim=1).mean(
+                    dim=1
+                )
                 self.valid_ptos = cls_ptos
                 break
 

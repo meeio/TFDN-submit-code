@@ -39,7 +39,7 @@ parser.add_argument("--steps", type=int, default=100000, help="Epochs of train d
 
 parser.add_argument("--log_per_step", type=int, default=200, help="Epochs of train data")
 
-parser.add_argument("--eval_per_step", type=int, default=1000, help="Epochs of train data")
+parser.add_argument("--eval_per_step", type=int, default=20, help="Epochs of train data")
 
 
 parser.add_argument("--tag", type=str, default='NO TAG', help="tag for this train.")

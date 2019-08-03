@@ -316,9 +316,9 @@ class TrainableModule(ABC):
 
         accurace = 0
         if self.class_wise_eval:
-            class_wise_accurace = self.confusion_matrix.diag() / self.confusion_matrix.sum(1)
-            
-            accurace = torch.mean(class_wise_accurace)
+            cls_wise_accu = self.confusion_matrix.diag() / self.confusion_matrix.sum(1)
+            cls_wise_accu = cls_wise_accu[cls_wise_accu==cls_wise_accu]            
+            accurace = torch.mean(cls_wise_accu)
         
         self.loss_holder.update_loss('valid_accurace', accurace)
         self.best_accurace = max((self.best_accurace, accurace))

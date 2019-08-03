@@ -3,8 +3,6 @@ from PIL import Image
 import os
 import numpy as np
 
-# from .utils import download_url
-# from .vision import VisionDataset
 
 from torchvision.datasets.utils import download_url
 from torchvision.datasets.vision import VisionDataset

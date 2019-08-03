@@ -6,39 +6,41 @@ ROOT = "./DATASET/"
 ROOT_MNIST = "./DATASET/MNIST"
 
 
-def for_dataset(name, split='train', transfrom=None, with_targets=False):
+def for_dataset(name, split="train", transfrom=None, with_targets=False):
     data_set = None
     data_info = dict()
-    if name.upper() == 'MNIST':
+    if name.upper() == "MNIST":
         from torchvision.datasets import MNIST
+
         dataset = MNIST(
             root=ROOT + name.upper(),
-            train=(split == 'train'),
-            transform=transfrom
+            train=(split == "train"),
+            transform=transfrom,
+            download=True,
         )
-        data_info['labels'] = dataset.targets
+        data_info["labels"] = dataset.targets
     elif name.upper() == "USPS":
         from mdata.usps import USPS
+
         dataset = USPS(
             root=ROOT + name.upper(),
-            train=(split == 'train'),
+            train=(split == "train"),
             transform=transfrom,
-            download= True,
+            download=True,
         )
-        data_info['labels'] = torch.tensor(dataset.targets)
+        data_info["labels"] = torch.tensor(dataset.targets)
         # print(type(dataset.targets))
         # assert False
     elif name.upper() == "SVHN":
         assert False
         from torchvision.datasets import SVHN
+
         dataset = SVHN(
-            root=ROOT + name.upper(),
-            split = split,
-            transform=transfrom,
-            download=True,
+            root=ROOT + name.upper(), split=split, transform=transfrom, download=True
         )
-        data_info['labels'] = torch.from_numpy(dataset.labels) 
+        data_info["labels"] = torch.from_numpy(dataset.labels)
     return dataset, data_info
+
 
 def for_digital_transforms(is_rgb=True):
     channel = 3 if is_rgb else 1
@@ -46,10 +48,7 @@ def for_digital_transforms(is_rgb=True):
         transforms.Resize(28),
         transforms.Grayscale(channel),
         transforms.ToTensor(),
-        transforms.Normalize(
-            mean=(0.5,) * channel,
-            std=(0.5,) * channel
-        )
+        transforms.Normalize(mean=(0.5,) * channel, std=(0.5,) * channel),
     ]
     return transforms.Compose(trans)
 

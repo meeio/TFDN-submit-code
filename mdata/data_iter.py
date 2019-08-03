@@ -8,14 +8,14 @@ class EndlessIter:
     
     """
 
-    def __init__(self, dataloader, max = -1):
+    def __init__(self, dataloader, max = None):
         assert dataloader is not None
         self.l = dataloader
-        self.it = None
+        self.it = iter(dataloader)
         self.current_iter = 0
         self.max_iter = max
 
-    def next(self, need_end=False):
+    def next(self):
         """ return next item of dataloader, if use 'endness' mode, 
         the iteration will not stop after one epoch
         
@@ -26,20 +26,46 @@ class EndlessIter:
         Returns:
             list -- data
         """
-        self.current_iter += 1
-        if self.max_iter > 0 and self.current_iter > self.max_iter:
+
+        # return None when reach max iter
+        if self.current_iter == self.max_iter:
             self.current_iter = 0
             return None
-
-        if self.it == None:
-            self.it = iter(self.l)
-
+        
         try:
             i = next(self.it)
         except Exception:
             self.it = iter(self.l)
-            self.current_iter = 0
-            i = next(self.it) if not need_end else None
+            # continue to next epoch when max iter is None
+            if self.max_iter is None:
+                i = next(self.it)
+            # if max iter sets to -1, return None when ends an epoch 
+            elif self.max_iter <= 0:
+                i = None
+            else:
+                i = next(self.it)
 
-        return i
+        self.current_iter += 1
+        return i        
+
+
+if __name__ == "__main__":
+    targets = list(range(15))
+    it = EndlessIter(targets, max=10)
+
+    while True:
+        c = it.next()
+        if c is None:
+            print('ends')
+            break
+        else:
+            print(c)
+    
+    while True:
+        c = it.next()
+        if c is None:
+            print('ends')
+            break
+        else:
+            print(c)
 
