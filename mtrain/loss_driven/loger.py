@@ -15,8 +15,8 @@ class LogCapsule(LossChangeListener):
         self.tag = name
         self.current_step = 0
      
-        self.range_loss = None
-        self.range_step = 0
+        self.range_loss = 0.0
+        self.range_step = 0.0
 
         loss_bucker.add_lister(self)
 
@@ -25,7 +25,7 @@ class LogCapsule(LossChangeListener):
             result = self.range_loss / self.range_step
         except:
             result = 0.0
-        self.range_loss = None
+        self.range_loss = 0.0
         self.range_step = 0.0
         self.range_step = 0.0
         try:
@@ -41,14 +41,12 @@ class LogCapsule(LossChangeListener):
     
     def in_change(self, value):
         try:
-            value = value.clone().detach()
+            value = value.detach()
         except:
             value = value
+        
 
-        if self.range_loss is None:
-            self.range_loss = value
-        else:
-            self.range_loss += value
+        self.range_loss += value
 
 
     def after_change(self):

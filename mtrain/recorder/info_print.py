@@ -16,7 +16,6 @@ def cprint(f, context):
     print(f.format(s=context))
 
 
-
 from tabulate import tabulate
 from collections import defaultdict
 

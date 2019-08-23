@@ -57,7 +57,7 @@ def anpai(tom, use_gpu, need_logging=True):
             cprint(BUILD,info)
 
     def __handle_tensor(tensor, d):
-        handle.append(tensor.to(d))
+        handle.append(tensor.to(d, non_blocking=True))
         name = tensor.__class__.__name__
         if need_logging :
             if str(d.type) == 'cpu':

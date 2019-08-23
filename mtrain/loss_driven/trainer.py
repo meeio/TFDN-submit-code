@@ -64,6 +64,8 @@ class TrainCapsule(LossChangeListener):
     def before_change(self):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
+        # for param_group in self.optimer.param_groups:
+        #     print(param_group['lr'])
         
     def in_change(self, value):
         self.optimer.zero_grad()

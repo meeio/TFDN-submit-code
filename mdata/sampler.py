@@ -10,11 +10,14 @@ from abc import abstractclassmethod
 
 
 class LevelSampler(Sampler):
-    def __init__(self, targets_sampler):
+    def __init__(self, targets_sampler, **kwargs):
+        self.__dict__.update(kwargs)
         self.targets_sampler = targets_sampler
         self.has_up_sampler = False
         if isinstance(targets_sampler, LevelSampler):
             self.has_up_sampler = True
+        self.targets = self.get_targets()
+        # self.idx_list = self.generate_idxs_list(targets)
 
     @abstractclassmethod
     def generate_idxs_list(self, targets):
@@ -34,11 +37,10 @@ class LevelSampler(Sampler):
         return target
 
     def __iter__(self):
-        targets = self.get_targets()
-        idx_list = self.generate_idxs_list(targets)
-        idx = idx_list
+        idx = self.generate_idxs_list(self.targets)
         if self.has_up_sampler:
-            idx = [self.up_idx[i] for i in idx_list]
+            idx = [self.up_idx[i] for i in idx]
+            assert False
         return iter(idx)
 
 
@@ -47,8 +49,7 @@ class BalancedSampler(LevelSampler):
     """
 
     def __init__(self, targets, max_per_cls=None):
-        super().__init__(targets_sampler=targets)
-        self.max_per_cls = max_per_cls
+        super().__init__(targets_sampler=targets, max_per_cls=max_per_cls)
 
     def generate_idxs_list(self, targets):
         all_classes = torch.unique(targets)
@@ -60,11 +61,12 @@ class BalancedSampler(LevelSampler):
 
             if self.max_per_cls:
                 random.shuffle(sample_indexes)
-                sample_indexes = sample_indexes[0:self.max_per_cls]
+                sample_indexes = sample_indexes[0 : self.max_per_cls]
 
             cls_idxs.append(sample_indexes)
 
         cls_num = len(cls_idxs)
+
         self.total = cls_num * min([len(i) for i in cls_idxs])
 
         def shuffle_with_return(l):
@@ -75,26 +77,7 @@ class BalancedSampler(LevelSampler):
         cls_idxs = list(zip(*cls_idxs))
 
         sample_idx = list(itertools.chain(*cls_idxs))
-    
         return sample_idx
-
-    def __len__(self):
-        return self.total
-
-
-class PartialSampler(LevelSampler):
-    """ sampler for paritial sampling
-    """
-
-    def __init__(self, targets, accept_cls):
-        super().__init__(targets_sampler=targets)
-        self.accept_cls = accept_cls
-
-    def generate_idxs_list(self, targets):
-        idxs = [i for i in range(len(targets)) if targets[i] in self.accept_cls]
-        self.total = len(idxs)
-        random.shuffle(idxs)
-        return idxs
 
     def __len__(self):
         return self.total
@@ -113,11 +96,13 @@ if __name__ == "__main__":
     a = minist.targets.numpy()
     pa = PartialSampler(a, [1, 2, 3, 4, 5, 6, 7])
     balanced = BalancedSampler(pa)
-    data = DataLoader(minist, batch_size=120, shuffle=False, sampler=balanced, drop_last=True)
+    data = DataLoader(
+        minist, batch_size=120, shuffle=False, sampler=balanced, drop_last=True
+    )
 
     for batch_idx, samples in enumerate(data):
         d, t = samples
-    
+
     for batch_idx, samples in enumerate(data):
         d, t = samples
         print(t)

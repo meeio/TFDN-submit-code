@@ -21,7 +21,7 @@ def init_weights(m):
 class LeNetEncoder(WeightedModule):
     """LeNet encoder model."""
 
-    def __init__(self):
+    def __init__(self, cls_num):
         """Init LeNet encoder."""
         super(LeNetEncoder, self).__init__()
 
@@ -40,7 +40,7 @@ class LeNetEncoder(WeightedModule):
             nn.Linear(50 * 4 * 4, 500),
             nn.ReLU(),
             nn.Dropout(),
-            nn.Linear(500, 10)
+            nn.Linear(500, cls_num)
         )
 
     def forward(self, inputs):

@@ -11,6 +11,34 @@ def get_parameters(module, flag):
         if flag in name:
             yield param
 
+def weights_init_helper(modul, params=None):
+    """give a module, init it's weight
+    
+    Args:
+        modul (nn.Module): torch module
+        params (dict, optional): Defaults to None. not used.
+    """
+    import torch.nn.init as init
+
+    for m in modul.children():
+        # init Conv2d with norm
+        if isinstance(m, nn.Conv2d):
+            init.kaiming_uniform_(m.weight)
+            init.constant_(m.bias, 0)
+        # init BatchNorm with norm and constant
+        elif isinstance(m, nn.BatchNorm2d):
+            if m.weight is not None:
+                init.normal_(m.weight, mean=1.0, std=0.02)
+                init.constant_(m.bias, 0)
+        # init full connect norm
+        elif isinstance(m, nn.Linear):
+            init.xavier_normal_(m.weight)
+            init.constant_(m.bias, 0)
+        elif isinstance(m, nn.Module):
+            weights_init_helper(m)
+
+        if isinstance(m, WeightedModule):
+            m.has_init = True
 
 class AlexNet(WeightedModule):
     def __init__(self, num_classes=1000):
@@ -59,7 +87,7 @@ def alexnet(pretrained=False, **kwargs):
     """
     model = AlexNet(**kwargs)
     if pretrained:
-        model_path = "./_PUBLIC_DATASET_/alexnet_caffe.pth"
+        model_path = "./DATASET/alexnet_caffe.pth"
         pretrained_model = torch.load(model_path)
         model.load_state_dict(pretrained_model)
     return model
@@ -69,76 +97,61 @@ def grl_hook(coeff):
         return -coeff*grad.clone()
     return fun1
 
-class AlexNetFc(WeightedModule):
+class AlexFeature(WeightedModule):
     """ AlexNet pretrained on imagenet for Office dataset"""
 
-    def __init__(self, need_train=True):
-        super(AlexNetFc, self).__init__()
+    def __init__(self):
+        super(AlexFeature, self).__init__()
 
         model_alexnet = alexnet(pretrained=True)
 
         self.features = model_alexnet.features
 
+        
         self.fc = nn.Sequential()
-        for i in range(7):
+        for i in range(6):
             self.fc.add_module(
                 "classifier" + str(i), model_alexnet.classifier[i]
-            )
+                )
 
         self.has_init = True
-
-        if not need_train:
-            for i in self.parameters():
-                i.requires_grad = False
 
     def forward(self, input_data):
         feature = self.features(input_data)
         feature = feature.view(-1, 256 * 6 * 6)
+        feature = self.fc(feature)       
+        return feature
+
+class AlexFc(WeightedModule):
+    """ AlexNet pretrained on imagenet for Office dataset"""
+
+    def __init__(self, class_num=31, bottleneck_dim=256):
+        super(AlexFc, self).__init__()
+
+        self.bottleneck = nn.Linear(4096, bottleneck_dim)
+        self.fc = nn.Linear(bottleneck_dim, class_num)
+
+        weights_init_helper(self)
+        self.has_init = True
+
+    def forward(self, input_data):
+        feature = self.bottleneck(input_data)
         feature = self.fc(feature)
         return feature
-    
-    
 
 
-def weights_init_helper(modul, params=None):
-    """give a module, init it's weight
-    
-    Args:
-        modul (nn.Module): torch module
-        params (dict, optional): Defaults to None. not used.
-    """
-    import torch.nn.init as init
-
-    for m in modul.children():
-        # init Conv2d with norm
-        if isinstance(m, nn.Conv2d):
-            init.kaiming_uniform_(m.weight)
-            init.constant_(m.bias, 0)
-        # init BatchNorm with norm and constant
-        elif isinstance(m, nn.BatchNorm2d):
-            if m.weight is not None:
-                init.normal_(m.weight, mean=1.0, std=0.02)
-                init.constant_(m.bias, 0)
-        # init full connect norm
-        elif isinstance(m, nn.Linear):
-            init.xavier_normal_(m.weight)
-            init.constant_(m.bias, 0)
-        elif isinstance(m, nn.Module):
-            weights_init_helper(m)
 
 
-        if isinstance(m, WeightedModule):
-            m.has_init = True
-
+            
 class AlexPto(WeightedModule):
     def __init__(self):
         super(AlexPto, self).__init__()
         self.feature = nn.Sequential(
-            nn.Linear(1000, 128),
-            # nn.BatchNorm1d(128),
-            # nn.LeakyReLU(),
+            nn.Linear(1000, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(),
 
-            # nn.Linear(100, 100),
+            nn.Linear(512, 128),
             # nn.BatchNorm1d(100),
             # nn.LeakyReLU(),
         )
@@ -151,32 +164,49 @@ class AlexPto(WeightedModule):
         return feature
 
 # class AlexClassifer(WeightedModule):
-#     def __init__(self, class_num, reversed_coeff):
+#     def __init__(self, class_num=31):
 #         super(AlexClassifer, self).__init__()
 
-#         self.classifer = nn.Sequential(
-#             nn.Linear(100, class_num),
+
+#         # self.feature = nn.Linear(1000,100)
+#         # self.i_norm = nn.InstanceNorm1d(100)
+#         # self.b_norm = nn.BatchNorm1d(100)
+#         # self.act = nn.LeakyReLU()
+
+#         self.feature = nn.Sequential(
+#             nn.Linear(1000, 100),
+#             nn.BatchNorm1d(100),
+#             nn.LeakyReLU(),
+#             nn.Dropout(),
+
+#             nn.Linear(100, 100),
+#             nn.BatchNorm1d(100),
+#             nn.LeakyReLU(),
+#             nn.Dropout(),
 #         )
+
+#         self.classifer = nn.Linear(100, class_num)
 
 #         weights_init_helper(self)
 
 #         self.softmax = nn.Softmax(dim=1)
 
+#         # assert callable(reversed_coeff)
+#         # self.revgrad_hook = lambda grad: -reversed_coeff()*grad.clone()
+
 #         self.class_num = class_num
 #         self.has_init = True
 
-#         assert callable(reversed_coeff)
-#         self.revgrad_hook = lambda grad: -reversed_coeff()*grad.clone()
+#     def forward(self, inputs, adapt=False):
 
-#     def forward(self, feature, adapt):
+#         feature = self.feature(inputs)
+        
+#         # if adapt:
+#         #     feature.register_hook(self.revgrad_hook)
 
-#         if adapt:
-#             feature.register_hook(self.revgrad_hook)
-
+                
 #         prediction_with_unkonw = self.classifer(feature)
 
-#         unkonw_prediction = self.softmax(prediction_with_unkonw)[:, -1].unsqueeze(1)
+#         # unkonw_prediction = self.softmax(prediction_with_unkonw)[:, -1].unsqueeze(1)
 
-#         return prediction_with_unkonw, unkonw_prediction
-
-
+#         return prediction_with_unkonw
