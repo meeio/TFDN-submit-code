@@ -107,6 +107,8 @@ class TrainableModule(ABC):
 
         self.params = params
 
+        self.writer = None
+
         # all key point of training steps
         self.log_step = self.params.log_per_step
         self.eval_step = self.params.eval_per_step
@@ -116,7 +118,7 @@ class TrainableModule(ABC):
         self.current_epoch = 0.0
         self.need_pre_eval = False
         self.has_pre_eval = False
-        self.class_wise_eval = True
+        self.class_wise_eval = False
         self.best_accurace = 0.0
 
         # loss changing driven
@@ -159,7 +161,10 @@ class TrainableModule(ABC):
 
         self.confusion_matrix = confusion_matrix
         self.iters = iters
-        self._define_log(*["cls_{}".format(i) for i in range(cls_num)], group="valid")
+        if self.params.cls_wise_accu:
+            self._define_log(
+                *["cls_{}".format(i) for i in range(cls_num)], group="valid"
+            )
         self._define_log("valid_accurace", group="valid")
 
         # regist losses
@@ -233,6 +238,9 @@ class TrainableModule(ABC):
 
     def train_module(self, **kwargs):
 
+        ls, vs = 0, 0
+        add1 = lambda x: x + 1
+
         for _ in range(self.total_steps):
 
             # set all networks to train mode
@@ -241,52 +249,23 @@ class TrainableModule(ABC):
 
             datas = self._feed_data_with_anpai(mode="train")
             self._train_process(datas, **kwargs)
+            ls, vs, self.current_step = map(add1, [ls, vs, self.current_step])
 
-            # making log
-            if self.current_step % self.log_step == (self.log_step - 1):
+            # log training
+            if ls == self.log_step:
+                ls = 0
+                losses = {
+                    k: v.avg_range_loss() for k, v in self.train_loggers.items()
+                }
 
-                losses = [
-                    (k, v.avg_range_loss())
-                    for k, v in self.train_loggers.items()
-                ]
-
-                if not self.params.disable_std:
-
-                    cprint(
-                        HINTS,
-                        self.params.tag
-                        + " - "
-                        + "Steps %3d ends. Remain %3d steps to go. Fished %.2f%%"
-                        % (
-                            self.current_step + 1,
-                            self.params.steps - self.current_step - 1,
-                            (self.current_step + 1)
-                            / (self.params.steps + 1)
-                            * 100,
-                        ),
-                    )
-
-                    cprint(
-                        HINTS,
-                        "Current best accurace is %3.3f%%."
-                        % (self.best_accurace * 100),
-                    )
-
-                    tabulate_print_losses(
-                        losses, trace="dalosses", mode="train"
-                    )
+                self._handle_loss_log(losses, mode="train")
 
             # begain eval
-            if (
-                self.current_step % self.eval_step == (self.eval_step - 1)
-                and self.current_step > self.eval_after_step
-            ):
+            if vs == self.eval_step:
+                vs = 0
                 self.eval_module(**kwargs)
-                # set all networks to train mode
                 for _, i in self.networks.items():
                     i.train(True)
-
-            self.current_step += 1
 
     def eval_module(self, **kwargs):
 
@@ -307,27 +286,25 @@ class TrainableModule(ABC):
                 self.confusion_matrix[t.long(), p.long()] += 1
 
         accurace = None
-        cls_wise_accu = None
+        cm = self.confusion_matrix
+        cls_wise_accu = cm.diag() / cm.sum(1)
         if self.class_wise_eval:
-            cls_wise_accu = self.confusion_matrix.diag() / self.confusion_matrix.sum(
-                1
-            )
-            _cls_wise_accu = cls_wise_accu[cls_wise_accu == cls_wise_accu]
-            accurace = torch.mean(_cls_wise_accu)
+            accurace = torch.mean(cls_wise_accu[cls_wise_accu == cls_wise_accu])
+        else:
+            accurace = cm.diag().sum() / cm.sum()
 
-        
-        self._update_losses(
-            {"cls_{}".format(i): v for i, v in enumerate(cls_wise_accu)}
-        )
+        if self.params.cls_wise_accu:
+            self._update_losses(
+                {"cls_{}".format(i): v for i, v in enumerate(cls_wise_accu)}
+            )
         self._update_loss("valid_accurace", accurace)
         self.best_accurace = max((self.best_accurace, accurace))
 
-        losses = [
-            (k, v.avg_range_loss()) for k, v in self.valid_loggers.items()
-        ]
+        losses = {k: v.avg_range_loss() for k, v in self.valid_loggers.items()}
 
         cprint(VALID, "End a evaling step.")
-        tabulate_print_losses(losses, trace="validloss", mode="valid")
+
+        self._handle_loss_log(losses, mode="valid")
 
     def _define_loss(
         self, loss_name, networks_key, optimer: dict, decay_op: dict = None
@@ -369,16 +346,18 @@ class TrainableModule(ABC):
         # self.train_caps[loss_name] = t
 
     def _define_log(self, *loss_name, group="train"):
-        def log_name(name):
-            loss_buck = self.loss_holder.get_loss(name, need_create=True)
-            l = LogCapsule(loss_buck, name, to_file=self.params.make_record)
-            if group == "train":
-                self.train_loggers[name] = l
-            else:
-                self.valid_loggers[name] = l
+        if group == "train":
+            step = self.log_step
+            group = self.train_loggers
+        else:
+            step = self.eval_step
+            group = self.valid_loggers
 
         for name in loss_name:
-            log_name(name)
+            loss_buck = self.loss_holder.get_loss(name)
+            group[name] = LogCapsule(
+                loss_buck, name, step=step, file_writer=self.writer
+            )
 
     def _update_loss(self, loss_name, value):
         self.loss_holder.update_loss(loss_name, value)
@@ -388,161 +367,31 @@ class TrainableModule(ABC):
             reach_last = index == (len(a) - 1)
             self._update_loss(key, a[key])
 
+    def _handle_loss_log(self, losses, mode):
 
-class DAModule(TrainableModule):
-    def __init__(self, params):
-        super(DAModule, self).__init__(params)
+        if mode == "train" and not self.params.disable_log:
 
-        self.best_accurace = 0.0
-        self.total = self.corret = 0
-
-        # set usefully loss function
-        self.ce = nn.CrossEntropyLoss()
-        self.bce = nn.BCELoss()
-
-        self.TrainCpasule = TrainCapsule
-
-        # # define valid losses
-        # self.define_log("valid_accu", group="valid")
-
-        # set total train step
-        self.total_step = self.params.steps
-
-        # init global label
-        self.TARGET, self.SOURCE = self.__batch_domain_label(
-            self.params.batch_size
-        )
-
-    @abstractclassmethod
-    def _train_step(self, s_img, s_label, t_img, t_label):
-        pass
-
-    @abstractclassmethod
-    def _valid_step(self, img):
-        pass
-
-    def _prepare_data(self):
-
-        params = self.params
-
-        dataset = params.dataset
-        source = params.source
-        target = params.target
-
-        def get_set(dataset, domain, split):
-            if dataset is None or dataset == "NONE":
-                dataset = mdl.get_dataset(
-                    dataset=domain, domain=None, split=split
-                )
-            else:
-                dataset = mdl.get_dataset(
-                    dataset=dataset, domain=domain, split=split
-                )
-            return dataset
-
-        train_S_set = mdl.get_dataset(dataset, source, split="train")
-        train_T_set = mdl.get_dataset(dataset, target, split="train")
-        valid_set = mdl.get_dataset(dataset, target, split="test")
-
-        def get_loader(dataset, shuffle, drop_last, batch_size=None):
-            batch_size = params.batch_size if batch_size is None else batch_size
-            l = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=params.batch_size,
-                drop_last=drop_last,
-                shuffle=shuffle,
-            )
-            return l
-
-        train_S_l = get_loader(train_S_set, shuffle=True, drop_last=True)
-        train_T_l = get_loader(train_T_set, shuffle=True, drop_last=True)
-        valid_l = get_loader(
-            valid_set,
-            shuffle=True,
-            drop_last=True,
-            batch_size=params.batch_size / 2,
-        )
-
-        iters = {
-            "train": {"S": EndlessIter(train_S_l), "T": EndlessIter(train_T_l)},
-            "valid": EndlessIter(valid_l),
-        }
-
-        return None, iters
-
-    def _feed_data(self, mode, *args, **kwargs):
-
-        assert mode in ["train", "valid"]
-
-        its = self.iters[mode]
-        if mode == "train":
-            s_img, s_label = its["S"].next()
-            t_img, t_label = its["T"].next()
-            return s_img, s_label, t_img, t_label
-        else:
-            return its.next(need_end=True)
-
-    def _train_process(self, datas):
-
-        s_img, s_label, t_img, t_label = datas
-
-        # begain a train step
-        self._train_step(s_img, s_label, t_img, t_label)
-
-    def _log_process(self):
-
-        return losses
-
-    def _eval_process(self, datas, **kwargs):
-
-        params = self.params
-
-        valid_target = kwargs.get("valid_target", "accu")
-
-        end_epoch = datas is None
-
-        def handle_datas(datas):
-
-            img, label = datas
-
-            # get result from a valid_step
-            predict = self._valid_step(img)
-
-            # calculate valid accurace and make record
-            current_size = label.size()[0]
-
-            # pred_cls = predict.data.max(1)[1]
-            # corrent_count = pred_cls.eq(label.data).sum()
-
-            _, predic_class = torch.max(predict, 1)
-
-            corrent_count = (torch.squeeze(predic_class) == label).sum().float()
-
-            self._update_logs(
-                {"valid_" + valid_target: corrent_count * 100 / current_size},
-                group="valid",
+            t = self.total_steps
+            c = self.current_step
+            cprint(
+                HINTS,
+                "%s - Steps %3d ends. Remain %3d steps to go. Fished %.2f%%"
+                % (self.__class__.__name__, c, t - c, c / t * 100),
             )
 
-            return corrent_count, current_size
+            cprint(
+                HINTS,
+                "Current best accurace is %3.3f%%."
+                % (self.best_accurace * 100),
+            )
+            tabulate_print_losses(losses, mode="train")
+        elif mode == "valid":
+            tabulate_print_losses(losses, mode="valid")
 
-        if not end_epoch:
-            right, size = handle_datas(datas)
-            self.total += size
-            self.corret += right
-        else:
-            logger.log(VALID, "End a evaling {}.".format(valid_target))
-            accu = self.corret / (self.total)
-            self.best_accurace = max((self.best_accurace, accu))
-            self.total = 0
-            self.corret = 0
+        if self.writer:
+            self.writer.add_scalars(mode, losses, self.current_step)
 
-    def __batch_domain_label(self, batch_size):
-        # Generate all Source and Domain label.
-        SOURCE = 1
-        TARGET = 0
+    def clean_up(self):
+        if self.writer:
+            self.writer.close()
 
-        sd = torch.Tensor(batch_size, 1).fill_(SOURCE)
-        td = torch.Tensor(batch_size, 1).fill_(TARGET)
-
-        sd, td, = anpai((sd, td), self.params.use_gpu, False)
-        return sd, td

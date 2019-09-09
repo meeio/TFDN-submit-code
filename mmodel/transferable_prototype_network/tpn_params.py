@@ -1,5 +1,5 @@
-from ..basic_params import parser
+from ..basic_params import basic_parser
 
 
 def get_params():
-    return parser.parse_args()
+    return basic_parser.parse_args()

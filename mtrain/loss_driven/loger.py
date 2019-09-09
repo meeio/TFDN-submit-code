@@ -2,15 +2,23 @@
 import os
 from mtrain.watcher import watcher
 from mtrain.loss_driven.lossholder import LossChangeListener, LossBuket
+from torch.utils.tensorboard import SummaryWriter
+from functools import partial
+# writer = SummaryWriter()
 
 class LogCapsule(LossChangeListener):
     def __init__(
         self,
         loss_bucker: LossBuket,
         name,
+        file_writer = None,
         step=1,
-        to_file=False
     ):
+
+        writer = None
+        if file_writer:
+            writer = partial(file_writer.add_scalar, tag=name)
+        self.writer = writer
 
         self.tag = name
         self.current_step = 0
@@ -32,9 +40,8 @@ class LogCapsule(LossChangeListener):
             loss = result.item()
         except:
             loss = result
-
+        # if self.writer
         return loss
-
 
     def before_change(self):
         pass
@@ -45,7 +52,6 @@ class LogCapsule(LossChangeListener):
         except:
             value = value
         
-
         self.range_loss += value
 
 

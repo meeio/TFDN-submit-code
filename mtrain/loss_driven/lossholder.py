@@ -46,14 +46,13 @@ class LossBuket(object):
 class LossHolder(object):
     def __init__(self):
         self.loss_dic = dict()
-        
         self.fixed = False
 
     def new_loss(self, name):
         self.loss_dic[name] = LossBuket()
         return self.loss_dic[name]
     
-    def get_loss(self, name, need_create=False):
+    def get_loss(self, name, need_create=True):
         if name not in self.loss_dic:
             if need_create:
                 self.loss_dic[name] = LossBuket()        

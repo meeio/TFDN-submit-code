@@ -19,7 +19,10 @@ def for_dataset(name, split="train", transfrom=None, sub_set=None, with_targets=
             transform=transfrom,
             download=True,
         )
-        data_info["labels"] = dataset.targets
+        if split=="train":
+            data_info["labels"] = dataset.train_labels.clone().detach()
+        else:
+            data_info["labels"] = dataset.test_labels.clone().detach()
 
     elif name.upper() == "USPS":
         from mdata.dataset.usps import USPS
@@ -31,6 +34,7 @@ def for_dataset(name, split="train", transfrom=None, sub_set=None, with_targets=
             download=True,
         )
         data_info["labels"] = torch.tensor(dataset.targets)
+
 
     elif name.upper() == "SVHN":
         raise Exception("Not Implemet Datase.")

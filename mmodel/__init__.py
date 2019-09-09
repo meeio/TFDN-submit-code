@@ -12,6 +12,6 @@ def get_module(name):
     elif name == 'ALEX':
         from .alex import alex_finetune_params, alex_finetune_module
         return alex_finetune_params.get_params(), alex_finetune_module.AlexFinetune()
-    elif name == 'CATPN':
-        from .commonness_aware_transferable_prototype_network import catpn_params, catpn_model 
-        return catpn_params.get_params(), catpn_model.CommonnessAwareTransferableProtopyteNetwork()
+    elif name == 'Center_Loss_Toy':
+        from .center_loss import toy_model, toy_params 
+        return toy_params.params, toy_model.CenterLossToy()

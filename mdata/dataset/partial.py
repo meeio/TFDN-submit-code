@@ -10,7 +10,7 @@ from torch.utils.data import Subset
 
 # from utils import get_targets
 from mdata.dataset.utils import get_targets
-from mground.plot_utils import show_a_tenosr
+# from mground.plot_utils import show_a_tenosr
 
 
 class PartialDataset(Dataset):
