@@ -14,13 +14,11 @@ basic_parser.add_argument("-cw", action="store_true", dest="cls_wise_accu")
 
 basic_parser.add_argument("--use_gpu", type=bool, default=True)
 
-basic_parser.add_argument("--log_per_step", type=int, default=200)
+basic_parser.add_argument("--log_per_step", type=int, default=10)
 
-basic_parser.add_argument("--eval_per_step", type=int, default=1000)
+basic_parser.add_argument("--eval_per_step", type=int, default=200)
 
 basic_parser.add_argument("--num_workers", type=int, default=4)
-
-basic_parser.add_argument("--classwise_valid", type=bool, default=True)
 
 basic_parser.add_argument("--tag", type=str, default="NO TAG")
 

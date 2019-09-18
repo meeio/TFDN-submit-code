@@ -22,10 +22,12 @@ class PartialDataset(Dataset):
         # generate mask of idx for sample in accepted_cls.
         accepted_mask = torch.sum(
             torch.stack([(targets == i) for i in accepted_cls], dim=1), dim=1
-        ).byte()
+        ).bool()
+
         accepted_idx = torch.Tensor(np.arange(len(dataset)))[accepted_mask].long()
 
         # select targets and mapping cls if needed.
+
         targets = targets[accepted_mask]
         
         if cls_mapping is not None:
@@ -39,8 +41,6 @@ class PartialDataset(Dataset):
     def __getitem__(self, idx):
         img = self.dataset[self.accepted_idx[idx]][0]
         lable = self.targets[idx]
-        # print(lable)
-        # show_a_tenosr(img)
         return img, lable
 
     def __len__(self):

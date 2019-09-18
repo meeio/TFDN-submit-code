@@ -62,18 +62,22 @@ class TrainCapsule(LossChangeListener):
         optim_loss.add_lister(self)
 
     def before_change(self):
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+        # if self.lr_scheduler is not None:
+        #     self.lr_scheduler.step()
         # for param_group in self.optimer.param_groups:
         #     print(param_group['lr'])
+        self.optimer.zero_grad()
+        return 
         
     def in_change(self, value):
-        self.optimer.zero_grad()
         self.optim_loss.value.backward(retain_graph=True)
         self.optimer.step()
 
     def after_change(self):
-        pass
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+        # for param_group in self.optimer.param_groups:
+        #     print(param_group['lr'])
 
 
     ##UGLY wait to delete

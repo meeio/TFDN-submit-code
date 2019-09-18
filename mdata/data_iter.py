@@ -1,3 +1,9 @@
+def inf_iter(iterable, with_end=False):
+    while True:
+        for i in iterable:
+            yield i
+        if with_end:
+            yield None
 
 class EndlessIter:
 

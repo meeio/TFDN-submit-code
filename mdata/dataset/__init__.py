@@ -7,7 +7,7 @@ ROOT = "./DATASET/"
 ROOT_MNIST = "./DATASET/MNIST"
 
 
-def for_dataset(name, split="train", transfrom=None, sub_set=None, with_targets=False):
+def for_dataset(name, split="train", transfrom=None, with_targets=False):
     data_set = None
     data_info = dict()
     if name.upper() == "MNIST":
@@ -20,9 +20,9 @@ def for_dataset(name, split="train", transfrom=None, sub_set=None, with_targets=
             download=True,
         )
         if split=="train":
-            data_info["labels"] = dataset.train_labels.clone().detach()
+            data_info["labels"] = dataset.targets.clone().detach()
         else:
-            data_info["labels"] = dataset.test_labels.clone().detach()
+            data_info["labels"] = dataset.targets.clone().detach()
 
     elif name.upper() == "USPS":
         from mdata.dataset.usps import USPS
@@ -47,7 +47,13 @@ def for_dataset(name, split="train", transfrom=None, sub_set=None, with_targets=
     elif name.upper() == "OFFICE31":
 
         dataset = ImageFolder(
-            root = ROOT + name.upper() + "/" + sub_set,
+            root = ROOT + name.upper() + "/" + split,
+            transform=transfrom,
+        )
+    elif name.upper() == "OFFICEHOME":
+
+        dataset = ImageFolder(
+            root = ROOT + name.upper() + "/" + split,
             transform=transfrom,
         )
 
@@ -82,7 +88,7 @@ def alex_net_transform(is_train):
 
 def resnet_transform(is_train):
 
-    trans = [
+    t_norm = [
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -92,15 +98,18 @@ def resnet_transform(is_train):
 
     trans = (
         [
-            transforms.Resize(224),
+            transforms.Resize(256),
+            transforms.RandomCrop(224),
             transforms.RandomHorizontalFlip(),
         ]
-        + trans
         if is_train
-        else [transforms.Resize(256), transforms.CenterCrop(224)] + trans
+        else [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+        ] 
     )
 
-    return transforms.Compose(trans)
+    return transforms.Compose(trans+t_norm)
 
 def for_digital_transforms(is_rgb=True):
     channel = 3 if is_rgb else 1

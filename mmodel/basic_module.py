@@ -72,14 +72,8 @@ class WeightedModule(nn.Module):
         if self.has_init:
             infos = str % "class inner define"
 
-        elif record_path is not None:
-            f = torch.load(record_path)
-            self.load_state_dict(f)
-            infos = str % "check point"
-
-        elif handler is not None:
-            handler(self)
-            infos = str % "provided init function"
+        else:
+            infos = str % "Pytorch!"
 
         cprint(BUILD, infos)
 
@@ -118,7 +112,6 @@ class TrainableModule(ABC):
         self.current_epoch = 0.0
         self.need_pre_eval = False
         self.has_pre_eval = False
-        self.class_wise_eval = False
         self.best_accurace = 0.0
 
         # loss changing driven
@@ -132,7 +125,7 @@ class TrainableModule(ABC):
         assert type(networks) is dict
 
         def init_weight_and_key(n, k):
-            n.weight_init()
+            # n.weight_init()
             n.tag = k
 
         for k, i in networks.items():
@@ -156,11 +149,11 @@ class TrainableModule(ABC):
 
         # generate train dataloaders and valid dataloaders
         # data_info is a dict contains basic data infomations
-        cls_num, iters = self._prepare_data()
+        cls_num, data_fn = self._prepare_data()
         confusion_matrix = torch.zeros(cls_num, cls_num)
 
         self.confusion_matrix = confusion_matrix
-        self.iters = iters
+        self.data_feeding_fn = data_fn
         if self.params.cls_wise_accu:
             self._define_log(
                 *["cls_{}".format(i) for i in range(cls_num)], group="valid"
@@ -187,15 +180,14 @@ class TrainableModule(ABC):
         valid_loaders = list()
         return data_info, train_loaders, valid_loaders
 
-    @abstractclassmethod
+    # @abstractclassmethod
     def _feed_data(self, mode):
         """ feed example based on dataloaders
 
         Returns:
             list -- all datas needed.
         """
-        datas = list()
-        return datas
+        return self.data_feeding_fn(mode)
 
     @abstractclassmethod
     def _regist_losses(self):
@@ -288,8 +280,9 @@ class TrainableModule(ABC):
         accurace = None
         cm = self.confusion_matrix
         cls_wise_accu = cm.diag() / cm.sum(1)
-        if self.class_wise_eval:
+        if self.params.cls_wise_accu:
             accurace = torch.mean(cls_wise_accu[cls_wise_accu == cls_wise_accu])
+            print(accurace)
         else:
             accurace = cm.diag().sum() / cm.sum()
 

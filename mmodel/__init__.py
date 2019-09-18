@@ -14,4 +14,7 @@ def get_module(name):
         return alex_finetune_params.get_params(), alex_finetune_module.AlexFinetune()
     elif name == 'Center_Loss_Toy':
         from .center_loss import toy_model, toy_params 
-        return toy_params.params, toy_model.CenterLossToy()
+        return toy_params.params, toy_model.CenterLossToy()    
+    elif name == 'DANN':
+        from .DANN import DANN_model, DANN_params 
+        return DANN_model.params, DANN_model.DANNModule()

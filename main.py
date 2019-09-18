@@ -3,7 +3,7 @@ import random
 from time import strftime
 from subprocess import Popen
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import torch
 from mmodel import get_module
@@ -24,7 +24,7 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
     torch.backends.cudnn.benchmark = True
 
-    model_name = "Center_Loss_Toy"
+    model_name = "DANN"
     param, model = get_module(model_name)
 
     tb_writer, tb_poc, tb_cmd = None, None, None
@@ -33,9 +33,8 @@ if __name__ == "__main__":
         log_path = os.path.join("records", model_name, time_stamp)
         tb_writer = SummaryWriter(log_dir=log_path, flush_secs=1)
         TB_CMD = TB_CMD.format(log_path)
-        tb_poc = Popen(tb_cmd, shell=True)
+        tb_poc = Popen(TB_CMD, shell=True)
         cprint(WARMN, HINT_FILE_DIR % log_path)
-        cprint(WARMN, HINT_TF_ADDR % tb_pid)
 
     try:
         model.writer = tb_writer
@@ -44,7 +43,6 @@ if __name__ == "__main__":
         raise
     finally:
         model.clean_up()
-        if tb_pid is not None:
+        if tb_poc is not None:
             tb_poc.kill()
             cprint(HINTS, HINT_RERUN % str(TB_CMD))
-

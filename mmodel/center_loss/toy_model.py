@@ -6,7 +6,7 @@ import torch
 from mdata.data_iter import EndlessIter
 from mdata.sampler import BalancedSampler
 from mdata.dataset.partial import PartialDataset
-from mdata.dataset import for_dataset, for_digital_transforms
+from mdata.dataset import for_dataset, resnet_transform
 from mdata.dataset.utils import universal_label_mapping
 
 from torch.utils.data.dataloader import DataLoader
@@ -22,30 +22,38 @@ from functools import partial
 import math
 
 from torch.nn.functional import cosine_similarity
+from mground.math_utils import euclidean_dist
 
+def dist_based_prediction(pred_pto, center_pto):
+    dist = euclidean_dist(pred_pto, center_pto, x_wise=True)
+    dist = -1 * dist
+    pred = torch.nn.functional.log_softmax(dist, dim=1)
+    return pred
 
 class CenterLossToy(TrainableModule):
     def __init__(self):
-        self.ce = torch.nn.CrossEntropyLoss()
 
+        self.ce = torch.nn.CrossEntropyLoss()
         super().__init__(params)
 
     def _prepare_data(self):
         """
-            prepare your dataset here
-            and return a iterator dic
+                prepare your dataset here
+                and return a iterator dic
         """
 
-        trans = for_digital_transforms(is_rgb=False)
-        sou_set = for_dataset("MNIST", split="train", transfrom=trans)
-        val_set = for_dataset("MNIST", split="test", transfrom=trans)
+        sou_set = for_dataset("Office31", split="A",
+                              transfrom=resnet_transform(is_train=True))
+        val_set = for_dataset("Office31", split="A",
+                              transfrom=resnet_transform(is_train=True))
 
         _DataLoader = partial(
             DataLoader,
-            batch_size=128,
+            batch_size=70,
             drop_last=True,
             num_workers=4,
             pin_memory=True,
+            shuffle=True,
         )
         sou_loader = _DataLoader(sou_set)
         val_loader = _DataLoader(val_set, num_workers=0)
@@ -55,22 +63,26 @@ class CenterLossToy(TrainableModule):
             "valid": EndlessIter(val_loader, max=10)
         }
 
-        return 10, iters
+        def data_feeding_fn(mode):
+            if mode == "train":
+                its = iters["train"]
+                return its.next()
+            elif mode == "valid":
+                its = iters["valid"]
+                return its.next()
+            raise Exception("feed error!")
 
-    def _feed_data(self, mode, *args, **kwargs):
+        return 31, data_feeding_fn
 
-        if mode == "train":
-            its = self.iters["train"]
-            return its.next()
-        elif mode == "valid":
-            its = self.iters["valid"]
-            return its.next()
-        raise Exception("feed error!")
 
     def _regist_networks(self):
-        from .networks.lenet import Net
+        from .networks.resnet import ResnetFeat, ResnetCls
         from .loss import CenterLoss
-        return {"N": Net(), "Cet": CenterLoss(num_classes=10, feat_dim=2)}
+        return {
+            "F": ResnetFeat(),
+            "C": ResnetCls(),
+            "Cet": CenterLoss(num_classes=31, feat_dim=256),
+        }
 
     def _regist_losses(self):
 
@@ -79,26 +91,24 @@ class CenterLossToy(TrainableModule):
             "lr": 0.001,
             "weight_decay": 0.0005,
             "momentum": 0.9,
-            "lr_mult": {"Cet": 500},
+            "lr_mult": {"F": 0.1, "C": 1, "Cet": 100},
         }
 
         self._define_loss(
             "total",
-            networks_key=["N", "Cet"],
+            networks_key=["F", "C", "Cet"],
             optimer=optimer,
         )
 
-        self._define_log(
-            "softmax", "cet",
-        )
-        
+        self._define_log("softmax", "cet")
 
     def _train_process(self, datas):
 
         imgs, labels = datas
-        feats, preds = self.N(imgs)
+        feats = self.F(imgs)
+        ptos, preds = self.C(feats)
         loss_softmax = self.ce(preds, labels)
-        loss_center = self.Cet(feats, labels)
+        loss_center = self.Cet(ptos, labels)
         L = loss_softmax + loss_center
 
         self._update_losses(
@@ -111,6 +121,8 @@ class CenterLossToy(TrainableModule):
 
     def _eval_process(self, datas):
         imgs, _ = datas
-        feats, preds = self.N(imgs)
+        feats = self.F(imgs)
+        ptos, _ = self.C(feats)
+        preds = dist_based_prediction(ptos, self.Cet.centers)
         props, predcition = torch.max(preds, dim=1)
         return predcition
