@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def euclidean_dist(x, y=None, x_wise=True):
     '''
@@ -51,3 +52,6 @@ def entropy(inputs, reduction="none", binary = True):
         return torch.sum(e)
     else:
         raise Exception("Not have such reduction mode.")
+
+def ent(self, output):
+    return - torch.mean(torch.log(F.softmax(output + 1e-6)))

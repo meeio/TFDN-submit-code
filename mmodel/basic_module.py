@@ -47,47 +47,6 @@ def _basic_weights_init_helper(modul, params=None):
         if isinstance(m, WeightedModule):
             m.has_init = True
 
-
-class WeightedModule(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.has_init = False
-        self.tag = None
-
-    def weight_init(self, handler=None, record_path=None):
-        """initial weights with help function `handler` or a path of check point `record_path` to restore, if neither of those are provide, leave init 
-        jod to torch inner function.
-
-            handler (function, optional): Defaults to None. use to init weights, such function must has sigture of `handler(Module)`.
-            record_path (str, optional): Defaults to None. use to locate cheack point file.
-        """
-
-        """ init weights with torch inner function 
-        """
-
-        name = self.__class__.__name__
-        str = name + "'s weights init from %s."
-
-        infos = str % "Pytorch's inner mechainist"
-        if self.has_init:
-            infos = str % "class inner define"
-
-        else:
-            infos = str % "Pytorch!"
-
-        cprint(BUILD, infos)
-
-        self.has_init = True
-
-    def register_weight_handler(handler):
-        WeightedModule.static_weight_handler = handler
-
-    def save_model(self, path, tag):
-        f = path + tag
-        torch.save(self.cpu().state_dict(), f)
-        return os.path.abspath(f)
-
-
 class TrainableModule(ABC):
 
     """ An ABC, a Tranable Module is a teample class need to define
@@ -118,6 +77,7 @@ class TrainableModule(ABC):
         self.loss_holder = LossHolder()
         self.train_caps = dict()
         self.train_loggers = dict()
+        self.proce_loggers = dict()
         self.valid_loggers = dict()
 
         # get all networks and init weights
@@ -246,11 +206,9 @@ class TrainableModule(ABC):
             # log training
             if ls == self.log_step:
                 ls = 0
-                losses = {
-                    k: v.avg_range_loss() for k, v in self.train_loggers.items()
-                }
+                self._handle_loss_log(mode="process")
+                self._handle_loss_log(mode="train")
 
-                self._handle_loss_log(losses, mode="train")
 
             # begain eval
             if vs == self.eval_step:
@@ -279,25 +237,19 @@ class TrainableModule(ABC):
 
         accurace = None
         cm = self.confusion_matrix
-        cls_wise_accu = cm.diag() / cm.sum(1)
         if self.params.cls_wise_accu:
-            accurace = torch.mean(cls_wise_accu[cls_wise_accu == cls_wise_accu])
-            print(accurace)
-        else:
-            accurace = cm.diag().sum() / cm.sum()
-
-        if self.params.cls_wise_accu:
+            cls_wise_accu = cm.diag() / cm.sum(1)
             self._update_losses(
                 {"cls_{}".format(i): v for i, v in enumerate(cls_wise_accu)}
             )
-        self._update_loss("valid_accurace", accurace)
-        self.best_accurace = max((self.best_accurace, accurace))
+            accurace = torch.mean(cls_wise_accu[cls_wise_accu == cls_wise_accu])
+        else:
+            accurace = cm.diag().sum() / cm.sum()
 
-        losses = {k: v.avg_range_loss() for k, v in self.valid_loggers.items()}
+        self._update_loss("valid_accurace", accurace)
 
         cprint(VALID, "End a evaling step.")
-
-        self._handle_loss_log(losses, mode="valid")
+        self._handle_loss_log(mode="valid")
 
     def _define_loss(
         self, loss_name, networks_key, optimer: dict, decay_op: dict = None
@@ -342,6 +294,9 @@ class TrainableModule(ABC):
         if group == "train":
             step = self.log_step
             group = self.train_loggers
+        elif group == "process":
+            step = self.log_step
+            group = self.proce_loggers
         else:
             step = self.eval_step
             group = self.valid_loggers
@@ -356,33 +311,68 @@ class TrainableModule(ABC):
         self.loss_holder.update_loss(loss_name, value)
 
     def _update_losses(self, a: dict):
-        for index, key in enumerate(a):
-            reach_last = index == (len(a) - 1)
+        for key in a:
             self._update_loss(key, a[key])
+    
+    def _update_logs(self, a: dict):
+        if self.current_step == 0:
+            for i in a:
+                self._define_log(i, group="process")
+        self._update_losses(a)
 
-    def _handle_loss_log(self, losses, mode):
-
-        if mode == "train" and not self.params.disable_log:
-
-            t = self.total_steps
-            c = self.current_step
-            cprint(
-                HINTS,
-                "%s - Steps %3d ends. Remain %3d steps to go. Fished %.2f%%"
-                % (self.__class__.__name__, c, t - c, c / t * 100),
-            )
-
-            cprint(
-                HINTS,
-                "Current best accurace is %3.3f%%."
-                % (self.best_accurace * 100),
-            )
-            tabulate_print_losses(losses, mode="train")
+    def _handle_loss_log(self, mode):
+        if mode == "train":
+            loggers = self.train_loggers
         elif mode == "valid":
-            tabulate_print_losses(losses, mode="valid")
+            loggers = self.valid_loggers
+        elif mode == "process":
+            loggers = self.proce_loggers
+        else:
+            raise Exception("Not such loggers!")
 
-        if self.writer:
-            self.writer.add_scalars(mode, losses, self.current_step)
+        losses = {
+            k: v.avg_range_loss() for k, v in loggers.items()
+        }
+
+        # print(self.train_loggers)
+        # print(self.proce_loggers)
+        # print(self.valid_loggers)
+
+        for loss_name in losses:
+            tags = loss_name.split("/", 1)
+            if len(tags) == 1:
+                tag = tags[0]
+                self.writer.add_scalar(
+                    mode + "/" + tag, losses[loss_name], self.current_step
+                )
+            else:
+                pre, sub = tags
+                self.writer.add_scalars(
+                    mode + "/" + pre,
+                    {sub: losses[loss_name]},
+                    self.current_step,
+                )
+
+        # if mode == "train" and not self.params.disable_log:
+
+        #     t = self.total_steps
+        #     c = self.current_step
+        #     cprint(
+        #         HINTS,
+        #         "%s - Steps %3d ends. Remain %3d steps to go. Fished %.2f%%"
+        #         % (self.__class__.__name__, c, t - c, c / t * 100),
+        #     )
+
+        #     cprint(
+        #         HINTS,
+        #         "Current best accurace is %3.3f%%."
+        #         % (self.best_accurace * 100),
+        #     )
+        #     tabulate_print_losses(losses, mode="train")
+        # elif mode == "valid":
+        #     tabulate_print_losses(losses, mode="valid")
+
+
 
     def clean_up(self):
         if self.writer:

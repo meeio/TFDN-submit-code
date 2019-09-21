@@ -15,7 +15,7 @@ class GradReverse(Function):
         return reverse_with_coeff, None
 
 class GradReverseLayer(nn.Module):
-    def __init__(self, coeff_fn=lambda: 1):
+    def __init__(self, coeff_fn):
         super().__init__()
         self.coeff_fn = coeff_fn
     

@@ -1,42 +1,7 @@
 import torch
 import torch.nn as nn
 from mmodel.basic_module import WeightedModule
-from torchvision.models import resnet50
 from mmodel.utils.gradient_reverse_layer import GradReverseLayer
-
-
-# def weights_init_helper(modul, params=None):
-#     """give a module, init it's weight
-
-#     Args:
-#         modul (nn.Module): torch module
-#         params (dict, optional): Defaults to None. not used.
-#     """
-#     import torch.nn.init as init
-
-#     for m in modul.children():
-#         # init Conv2d with norm
-#         if isinstance(m, nn.Conv2d):
-#             init.kaiming_uniform_(m.weight)
-#             init.constant_(m.bias, 0)
-#         # init BatchNorm with norm and constant
-#         elif isinstance(m, nn.BatchNorm2d):
-#             if m.weight is not None:
-#                 init.normal_(m.weight, mean=1.0, std=0.02)
-#                 init.constant_(m.bias, 0)
-#         elif isinstance(m, nn.BatchNorm1d):
-#             if m.weight is not None:
-#                 init.normal_(m.weight, mean=1.0, std=0.02)
-#                 init.constant_(m.bias, 0)
-#         # init full connect norm
-#         elif isinstance(m, nn.Linear):
-#             init.kaiming_uniform_(m.weight)
-#             init.constant_(m.bias, 0)
-#         elif isinstance(m, nn.Module):
-#             weights_init_helper(m)
-
-#         if isinstance(m, WeightedModule):
-#             m.has_init = True
 
 
 class ResnetFeat(nn.Module):
