@@ -14,7 +14,7 @@ from mdata.dataset.utils import get_targets
 
 
 class PartialDataset(Dataset):
-    def __init__(self, dataset, accepted_cls, cls_mapping=None):
+    def __init__(self, dataset, accepted_cls, ncls_mapping=None):
 
         targets = get_targets(dataset)
         if targets is None: raise Exception('target not found.')
@@ -29,18 +29,24 @@ class PartialDataset(Dataset):
         # select targets and mapping cls if needed.
 
         targets = targets[accepted_mask]
+
+        cls_mapping = dict()
+        for i in accepted_cls:
+            cls_mapping[str(torch.tensor(i))] = torch.tensor(i)
         
-        if cls_mapping is not None:
-            for original, mapped in cls_mapping.items():
-                targets[targets==original] = mapped
+        ncls_mapping = {str(torch.tensor(k)): torch.tensor(v) for k,v in ncls_mapping.items()}
+        
+        cls_mapping.update(ncls_mapping)
+        self.cls_mapping = cls_mapping
 
         self.dataset = dataset
         self.accepted_idx = accepted_idx
         self.targets = targets.long()
     
+
     def __getitem__(self, idx):
         img = self.dataset[self.accepted_idx[idx]][0]
-        lable = self.targets[idx]
+        lable = self.cls_mapping[str(self.targets[idx])]
         return img, lable
 
     def __len__(self):

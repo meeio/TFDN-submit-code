@@ -114,6 +114,8 @@ class DADAModule(TrainableModule):
                 - (high - low)
                 + low
             )
+        
+        self.dy_adv = dy_adv_coeff
 
         return {
             "F": ResnetFeat(),
@@ -240,7 +242,7 @@ class DADAModule(TrainableModule):
         L_dr_adv = (L_s_dr_adv + L_t_dr_adv) / 2
 
         L_total = (
-            0.01 * L_rec + 0.01 * L_mutual + L_dis + L_dis_adv + L_cls + L_ent
+            0.01 * L_rec + 0.0001 * L_mutual + L_dis + L_dis_adv + L_cls + L_ent
         )
 
         self._update_losses(
@@ -259,6 +261,7 @@ class DADAModule(TrainableModule):
                 "TargetClassify/dr_entropy":L_t_dr_cls,
                 "AdvClassify/source_entropy": -L_s_dr_adv,
                 "AdvClassify/target_entropy": -L_t_dr_adv,
+                "AdvCoeff": self.dy_adv(self.current_step),
                 "Discriminator/loss_dis": L_dis,
                 "Discriminator/loss_dis_adv": L_dis_adv,
                 "Reconstruct": L_rec,
