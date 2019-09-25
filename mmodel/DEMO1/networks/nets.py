@@ -79,6 +79,21 @@ class SDomainDis(nn.Module):
         domain = self.D(feats)
         return domain
 
+class Conver(nn.Module):
+    def __init__(self, adv_coeff_fn=lambda:-1):
+        super().__init__()
+        self.grl = GradReverseLayer(adv_coeff_fn)
+        self.C = nn.Sequential(
+            nn.Linear(512, 512),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, feats, adv=False):
+        if adv:
+            feats = self.grl(feats)   
+        cls = self.C(feats)
+        return cls
+
 class ClassPredictor(nn.Module):
     def __init__(self, cls_num, adv_coeff_fn=lambda:-1):
         super().__init__()
@@ -97,10 +112,6 @@ class ClassPredictor(nn.Module):
 class Reconstructor(nn.Module):
     def __init__(self, indim=2):
         super().__init__()
-
-        # l = nn.Linear(512 * 2, 512*2, bias=False)
-        # nn.init.xavier_normal_(l.weight)
-        # nn.init.constant_(l.bias, 0)
 
         self.R = nn.Sequential(
             nn.Linear(512*2, 512),
@@ -124,6 +135,7 @@ class Mine(nn.Module):
         h1 = F.leaky_relu(self.fc1_x(x)+self.fc1_y(y))
         h2 = self.fc2(h1)
         return h2
+        
 
     def mutual_est(self,x,y):
         shuffile_idx = torch.randperm(y.shape[0])
