@@ -25,7 +25,9 @@ from mdata.dataset.utils import universal_label_mapping
 from mdata.dataset.partial import PartialDataset
 
 import torch.nn.functional as F
-from ..utils.math.entropy import ent
+from ..utils.math.entropy import ent, sigmoid_ent, binary_ent
+
+from ..utils.smooth_loss import LabelSmoothingLoss
 
 
 class DEMO1Model(TrainableModule):
@@ -35,9 +37,20 @@ class DEMO1Model(TrainableModule):
         self.BCE = torch.nn.BCEWithLogitsLoss()
         self.KL = torch.nn.KLDivLoss()
 
-        shared = [0, 1, 5, 10, 11, 12, 15, 16, 17, 22]
-        sou_private = [2, 3, 4, 6, 7, 8, 9, 13, 14, 18]
-        tar_private = [19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30]
+        # setting for office-31
+        # shared = [0, 1, 5, 10, 11, 12, 15, 16, 17, 22]
+        # sou_private = [2, 3, 4, 6, 7, 8, 9, 13, 14, 18]
+        # tar_private = [19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30]
+
+        # setting for office-home
+        shared = list(range(0, 20))
+        sou_private = list(range(20, 45))
+        tar_private = list(range(45, 65))
+
+        # [800,1200,2000]
+        self.rec_step = 1600
+        self.ent_step = 3000
+        self.adv_step = 3000
 
         self.share = shared
         self.private = sou_private
@@ -54,28 +67,23 @@ class DEMO1Model(TrainableModule):
         size = params.batch_size
         self.S = torch.ones([size, 1], dtype=torch.float).cuda()
         self.T = torch.zeros([size, 1], dtype=torch.float).cuda()
-        self.SS = (torch.ones([size, 1], dtype=torch.float) - 0.1).cuda()
-        self.TT = (torch.zeros([size, 1], dtype=torch.float) + 0.1).cuda()
-        self.threshold = torch.Tensor([0.95]).cuda()
         self.zeros = torch.zeros([36, 512]).cuda()
         super().__init__(params)
 
     def _prepare_data(self):
 
+        D = "OFFICEHOME"
+        S = "Rw"
+        T = "Cl"
+
         sou_set = for_dataset(
-            "OFFICE31",
-            split="A",
-            transfrom=resnet_transform(is_train=True),
+            D, split=S, transfrom=resnet_transform(is_train=True)
         )
         tar_set = for_dataset(
-            "OFFICE31",
-            split="W",
-            transfrom=resnet_transform(is_train=True),
+            D, split=T, transfrom=resnet_transform(is_train=True)
         )
         val_set = for_dataset(
-            "OFFICE31",
-            split="W",
-            transfrom=resnet_transform(is_train=False),
+            D, split=T, transfrom=resnet_transform(is_train=False)
         )
 
         _ParitalDataset = partial(
@@ -90,7 +98,7 @@ class DEMO1Model(TrainableModule):
             DataLoader,
             batch_size=params.batch_size,
             drop_last=True,
-            num_workers=8,
+            num_workers=4,
             pin_memory=True,
             shuffle=True,
         )
@@ -123,7 +131,7 @@ class DEMO1Model(TrainableModule):
         )
 
         def dy_adv_coeff(iter_num, high=1.0, low=0.0, alpha=10.0):
-            iter_num = max(iter_num - 3000, 0)
+            iter_num = max(iter_num - self.adv_step, 0)
             return np.float(
                 2.0
                 * (high - low)
@@ -136,32 +144,26 @@ class DEMO1Model(TrainableModule):
             "F": ResnetFeat(),
             "N_d": Disentangler(in_dim=2048, out_dim=1024),
             "N_c": Disentangler(in_dim=2048, out_dim=512),
+            "D": DomainDis(in_dim=1024),
+            "C": ClassPredictor(cls_num=self.cls_info["cls_num"]),
             "N_dd": SDisentangler(in_dim=1024, out_dim=512),
             "N_dc": SDisentangler(in_dim=1024, out_dim=512),
-            "C": ClassPredictor(
-                cls_num=self.cls_info["cls_num"],
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
-            ),
-            "D_dc": SDomainDis(
-                in_dim=512,
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
-            ),
+            "D_dc": SDomainDis(in_dim=512),
             "D_dd": SDomainDis(
                 in_dim=512,
                 adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
             ),
-            "D": DomainDis(
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
-            ),
             "M_d": Mine(f=512, s=512),
             "R_d": Reconstructor(),
             "Cr": Conver(
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
-            ),
+                in_dim=512,
+                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
+                ),
         }
 
     def _regist_losses(self):
         def dy_lr_coeff(iter_num, alpha=10, power=0.75):
+            iter_num = max(iter_num - self.ent_step, 0)
             return np.float(
                 (1 + alpha * (iter_num / self.total_steps)) ** (-power)
             )
@@ -185,22 +187,25 @@ class DEMO1Model(TrainableModule):
         )
 
         define_loss(
-            "GlobalDisCls", networks_key=["F", "N_d", "D", "N_c", "C"]
+            "GlobalDisCls", networks_key=["F", "N_d", "N_c", "D", "C"]
         )
+
 
         define_loss(
             "Distangle",
-            networks_key=["N_dd", "N_dc", "D_dd", "D_dc", "R_d", "M_d"],
+            networks_key=["N_dd", "N_dc", "D_dd", "D_dc", "M_d", "R_d"],
+        )
+
+        define_loss(
+            "Rec",
+            networks_key=["R_d"],
         )
 
         define_loss("Distangle_cls_dis", networks_key=["C", "N_dc"])
 
         define_loss("Distangle_cls_adv", networks_key=["N_dd"])
 
-        define_loss("Domain_adv", networks_key=["F", "N_c", "D_dd", "Cr"])
-
-    def reconstruct_loss(self, src, tgt):
-        return torch.sum((src - tgt) ** 2) / (src.shape[0] * src.shape[1])
+        define_loss("Domain_adv", networks_key=["F", "N_c", "Cr", "D_dd"])
 
     def get_loss(self, imgs, labels=None, t=True):
 
@@ -215,13 +220,15 @@ class DEMO1Model(TrainableModule):
 
         """ recon loss """
         rec_d_feats = self.R_d([feats_dd, feats_dc])
-        L["rec"] = {"d": self.reconstruct_loss(feats_d, rec_d_feats)}
+        L["rec"] = {
+            "d": torch.sum((feats_d - rec_d_feats) ** 2)
+            / (feats_d.shape[0] * feats_d.shape[1])
+        }
 
         """ mutual info loss """
         L["diff"] = {
             "mut": self.M_d.mutual_est(feats_dc, feats_dd),
-            "nrom": torch.sum(feats_dd * feats_dc)
-            / feats_dd.shape[0],
+            "norm": torch.sum(feats_dd * feats_dc) / feats_dd.shape[0],
         }
 
         """ domain predictions based on different feats """
@@ -242,32 +249,36 @@ class DEMO1Model(TrainableModule):
             "dis_d_r": _BCE(domain_preds_d_r),
             "adv_dd_c": _BCE(domain_preds_dd_c),
         }
-
-        share_dc_dis = 0
-        private_dc_dis = 0
-
         partial_rec_dc = self.R_d([self.zeros, feats_dc]).detach()
-        domain_preds_dc = self.D(partial_rec_dc)
-        domain_preds_dc = torch.sigmoid(domain_preds_dc)
+        domain_p_preds_dc = self.D(partial_rec_dc)
+        domain_p_preds_dc = torch.sigmoid(domain_p_preds_dc)
 
         partial_rec_dd = self.R_d([feats_dd, self.zeros]).detach()
-        domain_preds_dd = self.D(partial_rec_dd)
-        domain_preds_dd = torch.sigmoid(domain_preds_dd)
+        domain_p_preds_dd = self.D(partial_rec_dd)
+        domain_p_preds_dd = torch.sigmoid(domain_p_preds_dd)
 
         """ classify loss """
         if t:
-            rdomain_preds_dc = 0.6 - domain_preds_dc
-            w = 36 * rdomain_preds_dc / rdomain_preds_dc.sum()
+            # rdomain_preds_dc = binary_ent(domain_p_preds_dc)
+            rdomain_preds_dc = 1 - domain_p_preds_dc
+            w = 36 * (rdomain_preds_dc / rdomain_preds_dc.sum())
             loss_cls = ent(self.C(feats_c), w)
-            loss_cls_dc = None
+            loss_cls_dc = ent(self.C(feats_dc))
             loss_cls_dd = ent(self.C(feats_dd))
             loss_cls_adv_dd = -loss_cls_dd
         else:
-            w = 36 * domain_preds_dc / domain_preds_dc.sum()
-            loss_cls = self.CE(self.C(feats_c), labels)
-            loss_cls_dc = torch.mean(self.NCE(self.C(feats_dc), labels)*w)
-            loss_cls_dd = None
-            loss_cls_adv_dd = None
+            # rdomain_preds_dc = binary_ent(domain_p_preds_dc)
+            rdomain_preds_dc = domain_p_preds_dc
+            w = 36 * (rdomain_preds_dc / rdomain_preds_dc.sum())
+            if self.current_step > self.rec_step:
+                loss_cls = torch.mean(
+                    self.NCE(self.C(feats_c), labels) * w
+                )
+            else:
+                loss_cls = self.CE(self.C(feats_c), labels)
+            loss_cls_dc = self.CE(self.C(feats_dc), labels)
+            loss_cls_dd = self.CE(self.C(feats_dd), labels)
+            loss_cls_adv_dd = -ent(self.C(feats_dd))
 
         L["cls"] = {
             "l": loss_cls,
@@ -276,15 +287,23 @@ class DEMO1Model(TrainableModule):
             "cls_adv_dd": loss_cls_adv_dd,
         }
 
+        """
+        CHEATING ZOOM !
+        """
         if t:
-            private_dc_dis = torch.mean(domain_preds_dc[labels == 20])
-            share_dc_dis = torch.mean(domain_preds_dc[labels != 20])
+            pl = self.cls_info["cls_num"]
+            shared = labels != pl
+            private = labels == pl
 
-            private_dd_dis = torch.mean(domain_preds_dd[labels == 20])
-            share_dd_dis = torch.mean(domain_preds_dd[labels != 20])
+            private_dc_dis = torch.mean(domain_p_preds_dc[private])
+            share_dc_dis = torch.mean(domain_p_preds_dc[shared])
 
-            private_w = torch.mean(c[labels == 20])
-            share_w = torch.mean(c[labels != 20])
+            private_dd_dis = torch.mean(domain_p_preds_dd[private])
+            share_dd_dis = torch.mean(domain_p_preds_dd[shared])
+
+            share_w = torch.mean(w[shared])
+            private_w = torch.mean(w[private])
+
         else:
             shared_mask = torch.sum(
                 torch.stack([(labels == i) for i in self.share], dim=1),
@@ -295,22 +314,25 @@ class DEMO1Model(TrainableModule):
             shared_mask = shared_mask.bool()
             private_mask = private_mask.bool()
 
-            share_dc_dis = torch.mean(domain_preds_dc[shared_mask])
-            private_dc_dis = torch.mean(domain_preds_dc[private_mask])
+            share_dc_dis = torch.mean(domain_p_preds_dc[shared_mask])
+            private_dc_dis = torch.mean(domain_p_preds_dc[private_mask])
 
-            share_dd_dis = torch.mean(domain_preds_dd[shared_mask])
-            private_dd_dis = torch.mean(domain_preds_dd[private_mask])
+            share_dd_dis = torch.mean(domain_p_preds_dd[shared_mask])
+            private_dd_dis = torch.mean(domain_p_preds_dd[private_mask])
 
-            share_w = torch.mean(c[shared_mask])
-            private_w = torch.mean(c[private_mask])
+            dc_shared_max = 0
+            dc_private_max = 0
+
+            share_w = torch.mean(w[shared_mask])
+            private_w = torch.mean(w[private_mask])
 
         L["CET"] = {
-            "sh": share_dc_dis,
-            "pr": private_dc_dis,
-            "sh_w": share_w,
-            "pr_w": private_w,
-            "sh_dd": share_dd_dis,
-            "pr_dd": private_dd_dis,
+            "dc_share": share_dc_dis,
+            "dc_private": private_dc_dis,
+            "dd_share": share_dd_dis,
+            "dd_private": private_dd_dis,
+            "weight_share": share_w,
+            "weight_private": private_w,
         }
 
         return L
@@ -319,37 +341,35 @@ class DEMO1Model(TrainableModule):
 
         s_imgs, s_labels, t_imgs, t_labels = datas
 
-        engage_recon = True if self.current_step > 1200 else False
-        engage_entropy = True if self.current_step > 1200 else False
-        engage_adv = True if self.current_step > 1900 else False
+        engage_recon = True if self.current_step > self.rec_step else False
+        engage_entropy = (
+            True if self.current_step > self.ent_step else False
+        )
+        engage_adv = True if self.current_step > self.adv_step else False
 
         Ls = self.get_loss(s_imgs, s_labels, t=False)
         Lt = self.get_loss(t_imgs, t_labels, t=True)
 
-        def L(f, s, c=1, d=None):
-            if d is None:
-                return c * (Ls[f][s] + Lt[f][s]) / 2
-            elif d == "S":
-                return c * (Ls[f][s])
-            elif d == "T":
-                return c * (Lt[f][s])
+        def L(f, s, c=[1, 1]):
+            c = c if isinstance(c, list) else [c] * 2
+            return (c[0] * Ls[f][s] + c[1] * Lt[f][s]) / 2
 
         # disentangle losses
-        L_diff_mut = L("diff", "mut", 0.01)
-        L_diff_norm = L("diff", "norm", 0.0001)
+        L_diff_mut = L("diff", "mut", 0.0001)
+        L_diff_norm = L("diff", "norm", 0.01)
         # recon losses
-        L_rec_d = L("rec", "d")
-        L_dis_d_r = L("dom", "dis_d_r") if engage_recon else 0
+        L_rec_d = L("rec", "d", c=0)
+        L_dis_d_r = L("dom", "dis_d_r", c=0.1 if engage_recon else 0)
         # discriminator losses
         L_dis_d = L("dom", "dis_d")
         L_dis_dd = L("dom", "dis_dd")
         L_dis_dc = L("dom", "dis_dc")
-        L_adv_d_c = L("dom", "adv_d_c") if engage_adv else 0
+        L_adv_d_c = L("dom", "adv_dd_c", c=0.5 if engage_adv else 0)
         # classifier losss
-        L_cls = L("cls", "l") if engage_entropy else L("cls", "l", "S")
-        L_cls_dc = L("cls", "cls_dc", "S")
-        L_cls_dd = L("cls", "cls_dd", "T")
-        L_cls_adv_dd = L("cls", "cls_adv_dd", "T")
+        L_cls = L("cls", "l", c=[1, 0.1] if engage_entropy else [1, 0])
+        L_cls_dc = L("cls", "cls_dc", c=[1, 0])
+        L_cls_dd = L("cls", "cls_dd", c=[0, 1])
+        L_cls_adv_dd = L("cls", "cls_adv_dd", c=[0, 0.1])
 
         self._update_losses(
             {
@@ -358,7 +378,8 @@ class DEMO1Model(TrainableModule):
                 + L_dis_dc
                 + L_diff_mut
                 + L_diff_norm
-                + L_dis_d_r,
+                + L_rec_d,
+                "Rec": L_dis_d_r,
                 "Distangle_cls_dis": L_cls_dc + L_cls_dd,
                 "Distangle_cls_adv": L_cls_adv_dd,
                 "Domain_adv": L_adv_d_c,
@@ -371,46 +392,41 @@ class DEMO1Model(TrainableModule):
                 "DomDis/dd": L_dis_dd,
                 "DomDis/dc": L_dis_dc,
                 "DomDis/d_r": L_dis_d_r,
-                "DomDis/d_adv_c": L_adv_d_c,
-                "Cls/c": L_cls,
+                "DomDis/adv": L_adv_d_c,
+                "Ent/t": Lt["cls"]["l"],
+                "Cls/c_s": L_cls,
                 "Cls/dc": L_cls_dc,
                 "Cls/dd": L_cls_dd,
-                "diff_mut": L_diff_mut,
-                "diff_norm": L_diff_norm,
+                "rec/d": L_rec_d,
+                "mut": L_diff_mut,
             }
         )
 
-        sh = Lt["CET"]["sh"]
-        shd = Lt["CET"]["sh_dd"]
-        sh_w = Lt["CET"]["sh_w"]
-        self._update_logs({"CET_DC/t_share": sh})
-        self._update_logs({"CET_DD/t_share": shd})
-        self._update_logs({"CET_W/share_w": sh_w})
-        pr = Lt["CET"]["pr"]
-        prd = Lt["CET"]["pr_dd"]
-        pr_w = Lt["CET"]["pr_w"]
-        if pr == pr:
-            self._update_logs({"CET_DC/t_private": pr})
-            self._update_logs({"CET_DD/t_private": prd})
-            self._update_logs({"CET_W/private_w": pr_w})
+        def check_update_logs(d):
+            for k in list(d.keys()):
+                if d[k] != d[k]:
+                    d.pop(k)
+            self._update_logs(d)
 
-        sh = Ls["CET"]["sh"]
-        shd = Ls["CET"]["sh_dd"]
-        # sh_w = Ls["CET"]["sh_w"]
-        self._update_logs({"CET_DC/s_share": sh})
-        self._update_logs({"CET_DD/s_share": shd})
-        # self._update_logs({"CET_S/share_w": sh_w})
-        pr = Ls["CET"]["pr"]
-        prd = Ls["CET"]["pr_dd"]
-        # sh_w = Ls["CET"]["pr_dd"]
-        # pr_w = Ls["CET"]["pr_w"]
-        if pr == pr:
-            self._update_logs({"CET_DC/s_private": pr})
-            self._update_logs({"CET_DD/s_private": prd})
-            # self._update_logs({"CET_S/private_w": pr_w})
+        check_update_logs(
+            {
+                "dc/t_share": Lt["CET"]["dc_share"],
+                "dc/t_private": Lt["CET"]["dc_private"],
+                "dc/s_share": Ls["CET"]["dc_share"],
+                "dc/s_private": Ls["CET"]["dc_private"],
+                "dd/t_share": Lt["CET"]["dd_share"],
+                "dd/t_private": Lt["CET"]["dd_private"],
+                "dd/s_share": Ls["CET"]["dd_share"],
+                "dd/s_private": Ls["CET"]["dd_private"],
+                "wt/share": Lt["CET"]["weight_share"],
+                "wt/private": Lt["CET"]["weight_private"],
+                "ws/share": Ls["CET"]["weight_share"],
+                "ws/private": Ls["CET"]["weight_private"],
+            }
+        )
 
     def _eval_process(self, datas):
-        imgs, l = datas
+        imgs, _ = datas
         feats = self.F(imgs)
 
         feats_dc = self.N_dc(self.N_d(feats))
@@ -418,10 +434,9 @@ class DEMO1Model(TrainableModule):
         domain_preds_d = self.D(partial_rec_feats)
         domain_preds_d = torch.sigmoid(domain_preds_d).squeeze()
 
-        t = torch.max(domain_preds_d[l != 20], dim=-1)[0]
-
         feats_di = self.N_c(feats)
         preds = F.softmax(self.C(feats_di), dim=-1)
         props, predcition = torch.max(preds, dim=1)
-        predcition[props < 0.9] = self.cls_info["cls_num"]
+        predcition[predcition < 0.5] = self.cls_info["cls_num"]
+        # predcition
         return predcition

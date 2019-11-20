@@ -12,3 +12,6 @@ def get_module(name):
     elif name == 'DEMO1':
         from .DEMO1 import DEMO1_model
         return DEMO1_model.params, DEMO1_model.DEMO1Model()
+    elif name == 'DEMO11':
+        from .DEMO11 import DEMO1_model
+        return DEMO1_model.params, DEMO1_model.DEMO1Model()

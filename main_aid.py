@@ -33,7 +33,7 @@ class TBHandler(object):
     def __init__(self, name):
         self.log_dir = build_dir(name)
         self.model_name = name
-        self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=1)
+        self.writer = SummaryWriter(log_dir=self.log_dir)
 
     def get_writer(self):
         return self.writer

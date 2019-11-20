@@ -6,7 +6,7 @@ parser = argparse.ArgumentParser(parents=[basic_parser], conflict_handler="resol
 
 parser.add_argument("-cw", action="store_false", dest="cls_wise_accu")
 
-parser.add_argument("--steps", type=int, default=50000)
+parser.add_argument("--steps", type=int, default=100000)
 
 parser.add_argument("--lr", type=float, default=0.01)
 

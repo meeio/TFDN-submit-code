@@ -50,6 +50,7 @@ class DADAModule(TrainableModule):
         size = params.batch_size
         self.S = torch.ones([size, 1], dtype=torch.float).cuda()
         self.T = torch.zeros([size, 1], dtype=torch.float).cuda()
+        self.ST = self.T + 0.5 
         self.threshold = torch.Tensor([0.5]).cuda()
         super().__init__(params)
 
@@ -100,10 +101,13 @@ class DADAModule(TrainableModule):
         from .networks.nets import (
             ResnetFeat,
             Disentangler,
+            SDisentangler,
             DomainDis,
+            SDomainDis,
             ClassPredictor,
             Reconstructor,
             Mine,
+            Conver,
         )
 
         def dy_adv_coeff(iter_num, high=1.0, low=0.0, alpha=10.0):
@@ -119,17 +123,20 @@ class DADAModule(TrainableModule):
 
         return {
             "F": ResnetFeat(),
-            "C": ClassPredictor(
-                cls_num=self.cls_info["cls_num"],
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
-            ),
-            "N_dr": Disentangler(),
-            "N_di": Disentangler(),
-            "D": DomainDis(
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
+            "C": ClassPredictor(cls_num=self.cls_info["cls_num"]),
+            "N_dr": Disentangler(in_dim=2048, out_dim=2048),
+            "N_drr": SDisentangler(in_dim=2048, out_dim=1024),
+            "N_di": Disentangler(in_dim=2048, out_dim=2048),
+            "D": DomainDis(in_dim=2048),
+            "D_rr": SDomainDis(
+                in_dim=1024,
+                # adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
             ),
             "M": Mine(),
             "R": Reconstructor(),
+            "Cr": Conver(
+                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
+            )
         }
 
     def _regist_losses(self):
@@ -161,11 +168,14 @@ class DADAModule(TrainableModule):
         )
 
         define_loss(
-            "DomainRelevent/Classify", networks_key=["C"]
+            "Dis", networks_key=["N_drr", "D_rr"]
         )
+
         define_loss(
-            "DomainRelevent/Adv", networks_key=["F", "N_dr"]
+            "Adv", networks_key=["F", "N_di", "Cr", "D_rr"]
         )
+        
+
 
     def mutual_info_estimate(self, x, y, y_):
         joint, marginal = self.M(x, y), self.M(x, y_)
@@ -178,10 +188,13 @@ class DADAModule(TrainableModule):
         feats = self.F(imgs)
         feats_di = self.N_di(feats)
         feats_dr = self.N_dr(feats)
+        feats_drr = self.N_drr(feats_dr)
+
+        L = dict()
 
         # recon loss
         rec_feats = self.R(feats_di, feats_dr)
-        loss_rec = self.reconstruct_loss(feats, rec_feats)
+        L['rec'] = {'f': self.reconstruct_loss(feats, rec_feats)}
 
         # mutual info loss
         shuffile_idx = torch.randperm(feats_di.shape[0])
@@ -189,10 +202,12 @@ class DADAModule(TrainableModule):
         loss_mutual = self.mutual_info_estimate(
             feats_dr, feats_di, shuffled_feats_di
         )
+        L['diff'] = {'mut': loss_mutual}
 
         # adv training
-        domain_preds_di = self.D(feats_di, adv=True)
-        domain_preds_dr = self.D(feats_dr, adv=False)
+        domain_preds_dr = self.D(feats_dr)
+        domain_preds_drr = self.D_rr(feats_drr)
+        domain_preds_di = self.D_rr(self.Cr(feats_di, adv=True))
 
         if labels is None:
             domain_target = self.T
@@ -206,66 +221,51 @@ class DADAModule(TrainableModule):
             loss_dr_cls = self.CE(preds_dr_cls, labels)
             loss_dr_adv = - ent(preds_dr_cls)
 
+        L['cls'] = {'cls': loss_cls}
 
         loss_adv = self.BCE(domain_preds_di, domain_target)
         loss_domain = self.BCE(domain_preds_dr, domain_target)
+        loss_disen = self.BCE(domain_preds_drr, domain_target)
 
-        return (
-            loss_rec,
-            loss_mutual,
-            loss_domain,
-            loss_adv,
-            loss_cls,
-            loss_dr_cls,
-            loss_dr_adv,
-        )
+        L['dom'] = {
+            "dis": loss_domain,
+            "adv": loss_adv,
+            "den": loss_disen
+        }
+
+        return L
 
     def _train_process(self, datas):
 
         s_imgs, s_labels, t_imgs, _ = datas
 
-        L_s_rec, L_s_mutual, L_s_domain, L_s_adv_d, L_s_cls, L_s_dr_cls, L_s_dr_adv = self.get_loss(
-            s_imgs, s_labels
-        )
+        Ls = self.get_loss(s_imgs, s_labels)
+        Lt = self.get_loss(t_imgs)
 
-        L_t_rec, L_t_mutual, L_t_domain, L_t_adv_d, L_t_ent, L_t_dr_cls, L_t_dr_adv = self.get_loss(
-            t_imgs
-        )
+        def L(f, s, c=[1, 1]):
+            c = c if isinstance(c, list) else [c] * 2
+            return (c[0] * Ls[f][s] + c[1] * Lt[f][s]) / 2
 
-        L_rec = (L_s_rec + L_t_rec) / 2
-        L_mutual = (L_s_mutual + L_t_mutual) / 2
-        L_dis = (L_s_domain + L_t_domain) / 2
-        L_dis_adv = (L_s_adv_d + L_t_adv_d) / 2
-        L_cls = L_s_cls 
-        L_ent = L_t_ent 
-        L_dr_cls = (L_s_dr_cls + L_t_dr_cls) / 2
-        L_dr_adv = (L_s_dr_adv + L_t_dr_adv) / 2
-
-        L_total = (
-            0.01 * L_rec + 0.0001 * L_mutual + L_dis + L_dis_adv + L_cls + L_ent
-        )
+        L_diff_mut = L("diff", "mut", 0.0001)
+        L_rec = L("rec", "f", 0.01)
+        L_cls = L("cls", "cls", c=[1,0])
+        L_dis = L("dom", "dis")
+        L_dsen = L("dom", "den")
+        L_dis_adv = L("dom", "adv", c=1 if self.current_step>1500 else 0)
 
         self._update_losses(
             {
-                "Total_loss": L_total,
-                "DomainRelevent/Classify": L_dr_cls,
-                "DomainRelevent/Adv":L_dr_adv,
+                "Total_loss": L_rec + L_diff_mut + L_dis + L_cls,
+                "Dis": L_dsen,
+                "Adv": L_dis_adv,
             }
         )
 
         self._update_logs(
             {
-                "SourceClassify/di_classify": L_s_cls,
-                "SourceClassify/dr_classify": L_s_dr_cls,
-                "TargetClassify/di_entropy": L_t_ent,
-                "TargetClassify/dr_entropy":L_t_dr_cls,
-                "AdvClassify/source_entropy": -L_s_dr_adv,
-                "AdvClassify/target_entropy": -L_t_dr_adv,
-                "AdvCoeff": self.dy_adv(self.current_step),
-                "Discriminator/loss_dis": L_dis,
-                "Discriminator/loss_dis_adv": L_dis_adv,
-                "Reconstruct": L_rec,
-                "MutualInfomation": L_mutual,
+                "Domain/dis": L_dis,
+                "Domain/adv": L_dis_adv,
+                "Domain/sen": L_dsen,
             }
         )
 

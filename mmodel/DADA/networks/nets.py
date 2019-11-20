@@ -8,16 +8,16 @@ from mmodel.utils.backbone import ResnetFeat
 # BackBone = ResnetFeat
 
 class Disentangler(nn.Module):
-    def __init__(self):
+    def __init__(self, in_dim=2048, out_dim=2048):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(2048, 2048),
-            nn.BatchNorm1d(2048),
+            nn.Linear(in_dim, out_dim),
+            nn.BatchNorm1d(out_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
 
-            nn.Linear(2048, 2048),
-            nn.BatchNorm1d(2048),
+            nn.Linear(out_dim, out_dim),
+            nn.BatchNorm1d(out_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
         )
@@ -26,23 +26,67 @@ class Disentangler(nn.Module):
         dist_feats = self.net(feats)
         return dist_feats
 
+class SDisentangler(nn.Module):
+    def __init__(self, in_dim=2048, out_dim=2048):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, out_dim),
+            nn.BatchNorm1d(out_dim),
+            nn.ReLU(inplace=True),
+            # nn.Dropout(0.5),
+
+            nn.Linear(out_dim, out_dim),
+            nn.BatchNorm1d(out_dim),
+            nn.ReLU(inplace=True),
+            # nn.Dropout(0.5),
+        )
+    
+    def forward(self, feats):
+        dist_feats = self.net(feats)
+        return dist_feats
 
 class DomainDis(nn.Module):
-    def __init__(self, adv_coeff_fn=lambda:-1):
+    def __init__(self, in_dim=2048, adv_coeff_fn=lambda:-1):
         super().__init__()
         self.grl = GradReverseLayer(adv_coeff_fn)
         self.D = nn.Sequential(
-            nn.Linear(2048, 256),
+            nn.Linear(in_dim, 256),
             nn.LeakyReLU(inplace=True),
-
-            nn.Linear(256, 1),
-            # nn.Sigmoid(),
-            # nn.LeakyReLU(inplace=True),            
+            nn.Linear(256, 1),        
         )
 
     def forward(self, feats, adv=False):
         if adv:
             feats = self.grl(feats)            
+        domain = self.D(feats)
+        return domain
+
+class SDomainDis(nn.Module):
+    def __init__(self, in_dim=2048, adv_coeff_fn=lambda:-1):
+        super().__init__()
+        self.grl = GradReverseLayer(adv_coeff_fn)
+        self.D = nn.Sequential(
+            nn.Linear(in_dim, 1),
+        )
+
+    def forward(self, feats, adv=False):
+        if adv:
+            feats = self.grl(feats)            
+        domain = self.D(feats)
+        return domain
+
+class Conver(nn.Module):
+    def __init__(self, in_dim=2048,adv_coeff_fn=lambda:-1):
+        super().__init__()
+        self.grl = GradReverseLayer(adv_coeff_fn)
+        self.D = nn.Sequential(
+            nn.Linear(in_dim, 1024),
+            nn.LeakyReLU(),
+        )
+
+    def forward(self, feats, adv=False):
+        if adv:
+            feats = self.grl(feats) 
         domain = self.D(feats)
         return domain
 

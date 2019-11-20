@@ -288,7 +288,7 @@ class TrainableModule(ABC):
 
         self._define_log(loss_name, group="train")
 
-        # self.train_caps[loss_name] = t
+        self.train_caps[loss_name] = t
 
     def _define_log(self, *loss_name, group="train"):
         if group == "train":
@@ -320,6 +320,19 @@ class TrainableModule(ABC):
                 self._define_log(i, group="process")
         self._update_losses(a)
 
+    def save(self):
+        nets = self.networks
+        torch.save(
+            {i: nets[i].state_dict() for i in nets},
+            'saved/test_module.pt'
+        )
+
+        trainers = self.train_caps
+        torch.save(
+            {i: trainers[i].optimer.state_dict() for i in trainers},
+            'saved/test_optimer.pt'
+        )
+
     def _handle_loss_log(self, mode):
         if mode == "train":
             loggers = self.train_loggers
@@ -333,10 +346,6 @@ class TrainableModule(ABC):
         losses = {
             k: v.avg_range_loss() for k, v in loggers.items()
         }
-
-        # print(self.train_loggers)
-        # print(self.proce_loggers)
-        # print(self.valid_loggers)
 
         for loss_name in losses:
             tags = loss_name.split("/", 1)
@@ -352,26 +361,6 @@ class TrainableModule(ABC):
                     {sub: losses[loss_name]},
                     self.current_step,
                 )
-
-        # if mode == "train" and not self.params.disable_log:
-
-        #     t = self.total_steps
-        #     c = self.current_step
-        #     cprint(
-        #         HINTS,
-        #         "%s - Steps %3d ends. Remain %3d steps to go. Fished %.2f%%"
-        #         % (self.__class__.__name__, c, t - c, c / t * 100),
-        #     )
-
-        #     cprint(
-        #         HINTS,
-        #         "Current best accurace is %3.3f%%."
-        #         % (self.best_accurace * 100),
-        #     )
-        #     tabulate_print_losses(losses, mode="train")
-        # elif mode == "valid":
-        #     tabulate_print_losses(losses, mode="valid")
-
 
 
     def clean_up(self):
