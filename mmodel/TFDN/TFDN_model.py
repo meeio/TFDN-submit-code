@@ -1,4 +1,4 @@
-from .DEMO1_params import params
+from .TFDN_params import params
 
 import itertools
 
@@ -25,29 +25,22 @@ from mdata.dataset.utils import universal_label_mapping
 from mdata.dataset.partial import PartialDataset
 
 import torch.nn.functional as F
-from ..utils.math.entropy import ent, sigmoid_ent, binary_ent
-
-from ..utils.smooth_loss import LabelSmoothingLoss
+from ..utils.math.entropy import ent
 
 
-class DEMO1Model(TrainableModule):
+
+class TFDN(TrainableModule):
     def __init__(self):
         self.CE = torch.nn.CrossEntropyLoss()
         self.NCE = torch.nn.CrossEntropyLoss(reduction="none")
         self.BCE = torch.nn.BCEWithLogitsLoss()
         self.KL = torch.nn.KLDivLoss()
 
-        # setting for office-31
-        # shared = [0, 1, 5, 10, 11, 12, 15, 16, 17, 22]
-        # sou_private = [2, 3, 4, 6, 7, 8, 9, 13, 14, 18]
-        # tar_private = [19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 30]
-
         # setting for office-home
         shared = list(range(0, 20))
         sou_private = list(range(20, 45))
         tar_private = list(range(45, 65))
 
-        # [800,1200,2000]
         self.rec_step = 1600
         self.ent_step = 3000
         self.adv_step = 3000
@@ -72,9 +65,9 @@ class DEMO1Model(TrainableModule):
 
     def _prepare_data(self):
 
-        D = "OFFICEHOME"
-        S = "Rw"
-        T = "Cl"
+        D = params.dataset
+        S = params.source
+        T = params.target
 
         sou_set = for_dataset(
             D, split=S, transfrom=resnet_transform(is_train=True)
@@ -207,7 +200,9 @@ class DEMO1Model(TrainableModule):
 
         define_loss("Domain_adv", networks_key=["F", "N_c", "Cr", "D_dd"])
 
-    def get_loss(self, imgs, labels=None, t=True):
+    def get_loss(self, imgs, labels=None):
+
+        t = True if labels is None else False
 
         L = dict()
 
@@ -258,18 +253,17 @@ class DEMO1Model(TrainableModule):
         domain_p_preds_dd = torch.sigmoid(domain_p_preds_dd)
 
         """ classify loss """
+        b = params.batch_size
         if t:
-            # rdomain_preds_dc = binary_ent(domain_p_preds_dc)
             rdomain_preds_dc = 1 - domain_p_preds_dc
-            w = 36 * (rdomain_preds_dc / rdomain_preds_dc.sum())
+            w = b * (rdomain_preds_dc / rdomain_preds_dc.sum())
             loss_cls = ent(self.C(feats_c), w)
             loss_cls_dc = ent(self.C(feats_dc))
             loss_cls_dd = ent(self.C(feats_dd))
-            loss_cls_adv_dd = -loss_cls_dd
+            loss_cls_adv_dd = - loss_cls_dd
         else:
-            # rdomain_preds_dc = binary_ent(domain_p_preds_dc)
             rdomain_preds_dc = domain_p_preds_dc
-            w = 36 * (rdomain_preds_dc / rdomain_preds_dc.sum())
+            w = b * (rdomain_preds_dc / rdomain_preds_dc.sum())
             if self.current_step > self.rec_step:
                 loss_cls = torch.mean(
                     self.NCE(self.C(feats_c), labels) * w
@@ -287,89 +281,39 @@ class DEMO1Model(TrainableModule):
             "cls_adv_dd": loss_cls_adv_dd,
         }
 
-        """
-        CHEATING ZOOM !
-        """
-        if t:
-            pl = self.cls_info["cls_num"]
-            shared = labels != pl
-            private = labels == pl
-
-            private_dc_dis = torch.mean(domain_p_preds_dc[private])
-            share_dc_dis = torch.mean(domain_p_preds_dc[shared])
-
-            private_dd_dis = torch.mean(domain_p_preds_dd[private])
-            share_dd_dis = torch.mean(domain_p_preds_dd[shared])
-
-            share_w = torch.mean(w[shared])
-            private_w = torch.mean(w[private])
-
-        else:
-            shared_mask = torch.sum(
-                torch.stack([(labels == i) for i in self.share], dim=1),
-                dim=1,
-            )
-            private_mask = 1 - shared_mask
-
-            shared_mask = shared_mask.bool()
-            private_mask = private_mask.bool()
-
-            share_dc_dis = torch.mean(domain_p_preds_dc[shared_mask])
-            private_dc_dis = torch.mean(domain_p_preds_dc[private_mask])
-
-            share_dd_dis = torch.mean(domain_p_preds_dd[shared_mask])
-            private_dd_dis = torch.mean(domain_p_preds_dd[private_mask])
-
-            dc_shared_max = 0
-            dc_private_max = 0
-
-            share_w = torch.mean(w[shared_mask])
-            private_w = torch.mean(w[private_mask])
-
-        L["CET"] = {
-            "dc_share": share_dc_dis,
-            "dc_private": private_dc_dis,
-            "dd_share": share_dd_dis,
-            "dd_private": private_dd_dis,
-            "weight_share": share_w,
-            "weight_private": private_w,
-        }
-
         return L
 
     def _train_process(self, datas):
 
         s_imgs, s_labels, t_imgs, t_labels = datas
 
-        engage_recon = True if self.current_step > self.rec_step else False
-        engage_entropy = (
-            True if self.current_step > self.ent_step else False
-        )
+        engage_rec = True if self.current_step > self.rec_step else False
+        engage_ent = True if self.current_step > self.ent_step else False
         engage_adv = True if self.current_step > self.adv_step else False
 
-        Ls = self.get_loss(s_imgs, s_labels, t=False)
-        Lt = self.get_loss(t_imgs, t_labels, t=True)
+        Ls = self.get_loss(s_imgs, s_labels)
+        Lt = self.get_loss(t_imgs)
 
         def L(f, s, c=[1, 1]):
             c = c if isinstance(c, list) else [c] * 2
             return (c[0] * Ls[f][s] + c[1] * Lt[f][s]) / 2
 
         # disentangle losses
-        L_diff_mut = L("diff", "mut", 0.0001)
-        L_diff_norm = L("diff", "norm", 0.01)
+        L_diff_mut = L("diff", "mut", 0) # larger than 0 to active mutual information.
+        L_diff_norm = L("diff", "norm", params.c_norm)
         # recon losses
-        L_rec_d = L("rec", "d", c=0)
-        L_dis_d_r = L("dom", "dis_d_r", c=0.1 if engage_recon else 0)
+        L_rec_d = L("rec", "d", c=params.c_norm)
+        L_dis_d_r = L("dom", "dis_d_r", c=0.1 if engage_rec else 0)
         # discriminator losses
         L_dis_d = L("dom", "dis_d")
         L_dis_dd = L("dom", "dis_dd")
         L_dis_dc = L("dom", "dis_dc")
-        L_adv_d_c = L("dom", "adv_dd_c", c=0.5 if engage_adv else 0)
+        L_adv_d_c = L("dom", "adv_dd_c", c=0.3 if engage_adv else 0)
         # classifier losss
-        L_cls = L("cls", "l", c=[1, 0.1] if engage_entropy else [1, 0])
+        L_cls = L("cls", "l", c=[1, params.c_ent] if engage_ent else [1, 0])
         L_cls_dc = L("cls", "cls_dc", c=[1, 0])
         L_cls_dd = L("cls", "cls_dd", c=[0, 1])
-        L_cls_adv_dd = L("cls", "cls_adv_dd", c=[0, 0.1])
+        L_cls_adv_dd = L("cls", "cls_adv_dd", c=[0, 1])
 
         self._update_losses(
             {
@@ -402,28 +346,6 @@ class DEMO1Model(TrainableModule):
             }
         )
 
-        def check_update_logs(d):
-            for k in list(d.keys()):
-                if d[k] != d[k]:
-                    d.pop(k)
-            self._update_logs(d)
-
-        check_update_logs(
-            {
-                "dc/t_share": Lt["CET"]["dc_share"],
-                "dc/t_private": Lt["CET"]["dc_private"],
-                "dc/s_share": Ls["CET"]["dc_share"],
-                "dc/s_private": Ls["CET"]["dc_private"],
-                "dd/t_share": Lt["CET"]["dd_share"],
-                "dd/t_private": Lt["CET"]["dd_private"],
-                "dd/s_share": Ls["CET"]["dd_share"],
-                "dd/s_private": Ls["CET"]["dd_private"],
-                "wt/share": Lt["CET"]["weight_share"],
-                "wt/private": Lt["CET"]["weight_private"],
-                "ws/share": Ls["CET"]["weight_share"],
-                "ws/private": Ls["CET"]["weight_private"],
-            }
-        )
 
     def _eval_process(self, datas):
         imgs, _ = datas
@@ -437,6 +359,5 @@ class DEMO1Model(TrainableModule):
         feats_di = self.N_c(feats)
         preds = F.softmax(self.C(feats_di), dim=-1)
         props, predcition = torch.max(preds, dim=1)
-        predcition[predcition < 0.5] = self.cls_info["cls_num"]
-        # predcition
+        predcition[props < 0.2] = self.cls_info["cls_num"]
         return predcition

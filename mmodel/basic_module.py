@@ -114,10 +114,6 @@ class TrainableModule(ABC):
 
         self.confusion_matrix = confusion_matrix
         self.data_feeding_fn = data_fn
-        if self.params.cls_wise_accu:
-            self._define_log(
-                *["cls_{}".format(i) for i in range(cls_num)], group="valid"
-            )
         self._define_log("valid_accurace", group="valid")
 
         # regist losses
@@ -237,14 +233,7 @@ class TrainableModule(ABC):
 
         accurace = None
         cm = self.confusion_matrix
-        if self.params.cls_wise_accu:
-            cls_wise_accu = cm.diag() / cm.sum(1)
-            self._update_losses(
-                {"cls_{}".format(i): v for i, v in enumerate(cls_wise_accu)}
-            )
-            accurace = torch.mean(cls_wise_accu[cls_wise_accu == cls_wise_accu])
-        else:
-            accurace = cm.diag().sum() / cm.sum()
+        accurace = cm.diag().sum() / cm.sum()
 
         self._update_loss("valid_accurace", accurace)
 

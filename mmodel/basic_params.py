@@ -24,4 +24,8 @@ basic_parser.add_argument("--tag", type=str, default="NO TAG")
 
 basic_parser.add_argument("--steps", type=int)
 
+basic_parser.add_argument("--batch_size", type=int, default=36)
+
+basic_parser.add_argument("--eval_batch_size", type=int, default=32)
+
 basic_params = basic_parser.parse_args()
