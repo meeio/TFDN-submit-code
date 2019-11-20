@@ -1,32 +1,22 @@
 from .TFDN_params import params
 
 import itertools
+from functools import partial
+
+from ..basic_module import TrainableModule
+from ..utils.math.entropy import ent
 
 import numpy as np
-import torch
 
+import torch
+import torch.nn.functional as F
+from torch.utils.data.dataloader import DataLoader
+
+from mdata.dataset import for_dataset, resnet_transform
 from mdata.data_iter import inf_iter
 from mdata.sampler import BalancedSampler
 from mdata.dataset.partial import PartialDataset
-from mdata.dataset import for_dataset, resnet_transform
 from mdata.dataset.utils import universal_label_mapping
-
-from torch.utils.data.dataloader import DataLoader
-
-from ..basic_module import TrainableModule
-
-from mground.loss_utils import mmd_loss
-from torch.nn import functional as F
-
-from functools import partial
-import math
-
-from mdata.dataset.utils import universal_label_mapping
-from mdata.dataset.partial import PartialDataset
-
-import torch.nn.functional as F
-from ..utils.math.entropy import ent
-
 
 
 class TFDN(TrainableModule):
@@ -60,7 +50,7 @@ class TFDN(TrainableModule):
         size = params.batch_size
         self.S = torch.ones([size, 1], dtype=torch.float).cuda()
         self.T = torch.zeros([size, 1], dtype=torch.float).cuda()
-        self.zeros = torch.zeros([36, 512]).cuda()
+        self.zeros = torch.zeros([size, 512]).cuda()
         super().__init__(params)
 
     def _prepare_data(self):
@@ -69,19 +59,11 @@ class TFDN(TrainableModule):
         S = params.source
         T = params.target
 
-        sou_set = for_dataset(
-            D, split=S, transfrom=resnet_transform(is_train=True)
-        )
-        tar_set = for_dataset(
-            D, split=T, transfrom=resnet_transform(is_train=True)
-        )
-        val_set = for_dataset(
-            D, split=T, transfrom=resnet_transform(is_train=False)
-        )
+        sou_set = for_dataset(D, split=S, transfrom=resnet_transform(is_train=True))
+        tar_set = for_dataset(D, split=T, transfrom=resnet_transform(is_train=True))
+        val_set = for_dataset(D, split=T, transfrom=resnet_transform(is_train=False))
 
-        _ParitalDataset = partial(
-            PartialDataset, ncls_mapping=self.cls_info["mapping"]
-        )
+        _ParitalDataset = partial(PartialDataset, ncls_mapping=self.cls_info["mapping"])
 
         sou_set = _ParitalDataset(sou_set, self.cls_info["sou_cls"])
         tar_set = _ParitalDataset(tar_set, self.cls_info["tar_cls"])
@@ -91,7 +73,7 @@ class TFDN(TrainableModule):
             DataLoader,
             batch_size=params.batch_size,
             drop_last=True,
-            num_workers=4,
+            num_workers=params.num_workers,
             pin_memory=True,
             shuffle=True,
         )
@@ -143,23 +125,19 @@ class TFDN(TrainableModule):
             "N_dc": SDisentangler(in_dim=1024, out_dim=512),
             "D_dc": SDomainDis(in_dim=512),
             "D_dd": SDomainDis(
-                in_dim=512,
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
+                in_dim=512, adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
             ),
             "M_d": Mine(f=512, s=512),
             "R_d": Reconstructor(),
             "Cr": Conver(
-                in_dim=512,
-                adv_coeff_fn=lambda: dy_adv_coeff(self.current_step),
-                ),
+                in_dim=512, adv_coeff_fn=lambda: dy_adv_coeff(self.current_step)
+            ),
         }
 
     def _regist_losses(self):
         def dy_lr_coeff(iter_num, alpha=10, power=0.75):
             iter_num = max(iter_num - self.ent_step, 0)
-            return np.float(
-                (1 + alpha * (iter_num / self.total_steps)) ** (-power)
-            )
+            return np.float((1 + alpha * (iter_num / self.total_steps)) ** (-power))
 
         optimer = {
             "type": torch.optim.SGD,
@@ -175,24 +153,13 @@ class TFDN(TrainableModule):
             "lr_lambda": lambda step: dy_lr_coeff(step),
         }
 
-        define_loss = partial(
-            self._define_loss, optimer=optimer, decay_op=decay_op
-        )
+        define_loss = partial(self._define_loss, optimer=optimer, decay_op=decay_op)
 
-        define_loss(
-            "GlobalDisCls", networks_key=["F", "N_d", "N_c", "D", "C"]
-        )
+        define_loss("GlobalDisCls", networks_key=["F", "N_d", "N_c", "D", "C"])
 
+        define_loss("Distangle", networks_key=["N_dd", "N_dc", "D_dd", "D_dc", "M_d", "R_d"])
 
-        define_loss(
-            "Distangle",
-            networks_key=["N_dd", "N_dc", "D_dd", "D_dc", "M_d", "R_d"],
-        )
-
-        define_loss(
-            "Rec",
-            networks_key=["R_d"],
-        )
+        define_loss("Rec", networks_key=["R_d"])
 
         define_loss("Distangle_cls_dis", networks_key=["C", "N_dc"])
 
@@ -255,19 +222,17 @@ class TFDN(TrainableModule):
         """ classify loss """
         b = params.batch_size
         if t:
-            rdomain_preds_dc = 1 - domain_p_preds_dc
+            rdomain_preds_dc = domain_p_preds_dc
             w = b * (rdomain_preds_dc / rdomain_preds_dc.sum())
             loss_cls = ent(self.C(feats_c), w)
             loss_cls_dc = ent(self.C(feats_dc))
             loss_cls_dd = ent(self.C(feats_dd))
-            loss_cls_adv_dd = - loss_cls_dd
+            loss_cls_adv_dd = -loss_cls_dd
         else:
-            rdomain_preds_dc = domain_p_preds_dc
+            rdomain_preds_dc = 1 - domain_p_preds_dc
             w = b * (rdomain_preds_dc / rdomain_preds_dc.sum())
             if self.current_step > self.rec_step:
-                loss_cls = torch.mean(
-                    self.NCE(self.C(feats_c), labels) * w
-                )
+                loss_cls = torch.mean(self.NCE(self.C(feats_c), labels) * w)
             else:
                 loss_cls = self.CE(self.C(feats_c), labels)
             loss_cls_dc = self.CE(self.C(feats_dc), labels)
@@ -299,7 +264,7 @@ class TFDN(TrainableModule):
             return (c[0] * Ls[f][s] + c[1] * Lt[f][s]) / 2
 
         # disentangle losses
-        L_diff_mut = L("diff", "mut", 0) # larger than 0 to active mutual information.
+        L_diff_mut = L("diff", "mut", 0)  # larger than 0 to active mutual information.
         L_diff_norm = L("diff", "norm", params.c_norm)
         # recon losses
         L_rec_d = L("rec", "d", c=params.c_norm)
@@ -318,11 +283,7 @@ class TFDN(TrainableModule):
         self._update_losses(
             {
                 "GlobalDisCls": L_dis_d + L_cls,
-                "Distangle": L_dis_dd
-                + L_dis_dc
-                + L_diff_mut
-                + L_diff_norm
-                + L_rec_d,
+                "Distangle": L_dis_dd + L_dis_dc + L_diff_mut + L_diff_norm + L_rec_d,
                 "Rec": L_dis_d_r,
                 "Distangle_cls_dis": L_cls_dc + L_cls_dd,
                 "Distangle_cls_adv": L_cls_adv_dd,
@@ -345,7 +306,6 @@ class TFDN(TrainableModule):
                 "mut": L_diff_mut,
             }
         )
-
 
     def _eval_process(self, datas):
         imgs, _ = datas

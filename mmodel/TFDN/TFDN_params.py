@@ -9,11 +9,8 @@ parser.add_argument("--steps", type=int, default=100000)
 
 parser.add_argument("--lr", type=float, default=0.01)
 
-parser.add_argument("--batch_size", type=int, default=36)
-
-parser.add_argument("--eval_batch_size", type=int, default=32)
-
 parser.add_argument("--c_ent", type=float, default=0.3)
+
 parser.add_argument("--c_norm", type=float, default=0.01)
 
 parser.add_argument("--dataset", type=str, default="OFFICEHOME")
